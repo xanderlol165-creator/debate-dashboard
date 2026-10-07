@@ -77,7 +77,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
     <button class="btn px-5 sm:px-7">Search</button>
   </form>
 
-  <a href="https://discord.gg/DhvvS4EwXH" target="_blank" rel="noopener noreferrer" class="panel p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-violet-500/40 bg-[#5865F2]/10 hover:border-[#5865F2] hover:bg-[#5865F2]/20 transition-all group block">
+  <a id="discord-banner" href="https://discord.gg/DhvvS4EwXH" target="_blank" rel="noopener noreferrer" class="panel p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-violet-500/40 bg-[#5865F2]/10 hover:border-[#5865F2] hover:bg-[#5865F2]/20 transition-all group block">
     <div class="flex items-center gap-3">
       <div class="text-3xl">👾</div>
       <div>
@@ -156,14 +156,10 @@ const state = { sort: 'newest', page: 1, pages: 1 };
 const notice = (msg) => `<div class="panel p-8 text-center text-violet-200/60">${esc(msg)}</div>`;
 let currentUser = null;
 
-// --- THE FETCH CACHE BYPASS SLEDGEHAMMER ---
 async function api(path, params = {}) {
   const url = new URL(path, location.origin);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url, { 
-    cache: 'no-store',
-    credentials: 'same-origin'
-  });
+  const res = await fetch(url, { cache: 'no-store', credentials: 'same-origin' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Request failed.');
   return data;
@@ -188,15 +184,21 @@ async function checkAuth() {
     const auth = await api('/api/auth/status');
     if (auth.logged_in) {
       currentUser = auth.user;
+      
+      if (auth.in_server) {
+        const banner = $('#discord-banner');
+        if (banner) banner.style.display = 'none';
+      }
+
       $('#auth-section').innerHTML = `
         <div class="panel p-2 pr-4 flex items-center gap-3 shadow-md">
-          <a href="/u/${esc(auth.user.id)}" class="flex items-center gap-3 group">
+          <div onclick="searchUser('${esc(auth.user.id)}'); window.scrollTo({ top: 0, behavior: 'smooth' });" class="flex items-center gap-3 group cursor-pointer">
             ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
             <div class="flex flex-col">
               <span class="font-bold text-violet-100 group-hover:text-violet-300 leading-tight">${esc(auth.user.name)}</span>
               <span class="text-xs text-violet-400 underline">View My Profile ↗</span>
             </div>
-          </a>
+          </div>
           <a href="/logout" class="text-xs text-rose-400 hover:text-rose-300 hover:underline ml-3">Log Out</a>
         </div>`;
     }
@@ -278,6 +280,8 @@ async function loadDebates() {
 const chip = { W: ['Win', 'var(--win)'], L: ['Loss', 'var(--loss)'], D: ['Draw', 'var(--draw)'] };
 
 function renderProfile(u) {
+  const isMe = currentUser && String(currentUser.id) === String(u.id);
+
   const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toLowerCase()}${u.streak.length > 1 && u.streak.kind !== 'L' ? 's' : u.streak.length > 1 ? 'es' : ''}` : '–';
   const stat = (v, l, c) => `<div class="rounded-xl bg-black/30 p-3 z-10 relative"><div class="text-2xl font-bold" style="color:${c}">${v}</div><div class="text-xs text-violet-200/50">${l}</div></div>`;
   const form = u.debates.filter(d => d.outcome).slice(0, 10).map(d => `<span title="Debate #${d.number}: ${chip[d.outcome][0]}" class="w-3 h-3 rounded-full" style="background:${chip[d.outcome][1]}"></span>`).join('');
@@ -300,11 +304,9 @@ function renderProfile(u) {
         <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
       </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
-  const customGlow = u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
-  const bannerBg = u.banner_url ? `<div class="absolute inset-0 opacity-30 bg-cover bg-center z-0" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>';
-  
-  const isMe = currentUser && String(currentUser.id) === String(u.id);
-  const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/40 border border-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg backdrop-blur-md transition-colors shadow">⚙️ Customize</button>` : '';
+  const customGlow = isMe && u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
+  const bannerBg = isMe && u.banner_url ? `<div class="absolute inset-0 opacity-30 bg-cover bg-center z-0" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>';
+  const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/40 border border-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg backdrop-blur-md transition-colors shadow">⚙️ Customize Profile</button>` : '';
 
   $('#profile-box').innerHTML = `
     <div class="panel p-5 glow relative overflow-hidden" style="${customGlow}">
@@ -318,8 +320,11 @@ function renderProfile(u) {
         </div>
       </div>
       <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-6 relative z-10">
-        ${stat(u.wins, 'Wins', 'var(--win)')}${stat(u.losses, 'Losses', 'var(--loss)')}${stat(u.draws, 'Draws', 'var(--draw)')}
-        ${stat(u.win_rate + '%', 'Win rate', '#d8b4fe')}${stat(streak, 'Current streak', '#d8b4fe')}
+        ${stat(u.wins || 0, 'Wins', 'var(--win)')}
+        ${stat(u.losses || 0, 'Losses', 'var(--loss)')}
+        ${stat(u.draws || 0, 'Stalemates', 'var(--draw)')}
+        ${stat(u.win_rate + '%', 'Win rate', '#d8b4fe')}
+        ${stat(streak, 'Current streak', '#d8b4fe')}
       </div>
       ${form ? `<div class="mt-4 flex items-center gap-2 text-sm text-violet-200/50 z-10 relative">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
     </div>
@@ -330,7 +335,7 @@ function renderProfile(u) {
         <ul class="max-h-[32rem] overflow-y-auto scroll pr-2">${rows || '<li class="py-6 text-center text-violet-200/50">No finished debates for this debater.</li>'}</ul>
       </div>
       <div class="panel p-4">
-        <h3 class="font-semibold mb-1 text-rose-300">Logged Fallacies (${u.fallacies ? u.fallacies.length : 0})</h3>
+        <h3 class="font-semibold mb-1 text-rose-300">Fallacies (${u.fallacies ? u.fallacies.length : 0})</h3>
         <ul class="max-h-[32rem] overflow-y-auto scroll pr-2">${fallacyRows}</ul>
       </div>
     </div>`;
@@ -376,8 +381,14 @@ async function searchUser(q) {
 /* Events */
 document.addEventListener('click', (e) => {
   const t = e.target.closest('[data-tab]'); if (t) showTab(t.dataset.tab);
-  const u = e.target.closest('[data-uid]'); if (u) { $('#q').value = u.dataset.uid; searchUser(u.dataset.uid); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+  
+  const u = e.target.closest('[data-uid]'); 
+  if (u) { 
+    searchUser(u.dataset.uid); 
+    window.scrollTo({ top: 0, behavior: 'smooth' }); 
+  }
 });
+
 $('#search-form').addEventListener('submit', (e) => { e.preventDefault(); const q = $('#q').value.trim(); if (q) searchUser(q); });
 $('#sort').addEventListener('change', (e) => { state.sort = e.target.value; state.page = 1; loadDebates(); });
 $('#prev').addEventListener('click', () => { state.page--; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
@@ -386,7 +397,6 @@ $('#next').addEventListener('click', () => { state.page++; loadDebates(); $('#ta
 const path = window.location.pathname;
 if (path.startsWith('/u/')) {
   const identifier = decodeURIComponent(path.substring(3));
-  $('#q').value = identifier;
   searchUser(identifier);
 }
 window.addEventListener('popstate', () => { window.location.reload(); });
