@@ -1,4 +1,4 @@
-"""Read-only dashboard for the debate bot's Turso database, now with Discord OAuth."""
+"""Read-only dashboard for the debate bot's Turso database, now with Discord OAuth & Custom Profiles."""
 import os
 import re
 import threading
@@ -24,7 +24,6 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 app = Flask(__name__)
-# Secure the session cookies
 app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
 
 _lock = threading.Lock()
@@ -36,12 +35,11 @@ DEBATE_COLS = ["debate_number", "notion", "affirmative_id", "affirmative_name",
                "start_link", "conclusion_link"]
 DEBATE_SELECT = ", ".join(DEBATE_COLS)
 
-# Added avatar_url to the base user fetch
-USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws"]
+USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
 
 
 def get_db():
-    """Initialize or return the database connection securely."""
+    """Initialize or return the database connection securely and ensure schema is up to date."""
     global _conn, _last_sync
     if _conn is None:
         if not TURSO_URL or not TURSO_TOKEN:
@@ -49,6 +47,15 @@ def get_db():
         _conn = libsql.connect(REPLICA_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
         _conn.sync()
         _last_sync = time.monotonic()
+        
+        # Auto-upgrade database for customizations
+        cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "banner_url" not in cols:
+            _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
+        if "embed_color" not in cols:
+            _conn.execute("ALTER TABLE users ADD COLUMN embed_color TEXT")
+        _conn.commit()
+        
     elif time.monotonic() - _last_sync > SYNC_INTERVAL:
         try:
             _conn.sync()
@@ -59,7 +66,6 @@ def get_db():
 
 
 def query(sql, params=(), cols=None):
-    """Run a SELECT and return dict rows."""
     with _lock:
         conn = get_db()
         rows = conn.execute(sql, params).fetchall()
@@ -67,7 +73,6 @@ def query(sql, params=(), cols=None):
 
 
 def execute_write(sql, params=()):
-    """Run an INSERT/UPDATE when a user logs in via Discord."""
     with _lock:
         conn = get_db()
         conn.execute(sql, params)
@@ -109,19 +114,33 @@ def serialize_debate(d):
     }
 
 
-# --- ROUTES ---
+# --- ROUTES (INCLUDING DISCORD EMBED INJECTION) ---
 
 @app.route("/")
 @app.route("/u/<path:username>")
 def index(username=None):
-    return render_template("index.html")
+    og = None
+    # If a specific user profile is linked, generate Discord embed tags
+    if username:
+        rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (username,))
+        if rows:
+            user = rows[0]
+            color_hex = user.get("embed_color") or "#a855f7"
+            image_url = user.get("banner_url") or user.get("avatar_url")
+            
+            og = {
+                "title": f"🏆 {user['wins']} Wins | {user['username']}'s Record",
+                "description": f"View {user['username']}'s full debate history on the leaderboards.",
+                "image": image_url,
+                "color": color_hex
+            }
+    return render_template("index.html", og=og)
 
 
 # --- DISCORD OAUTH2 SYSTEM ---
 
 @app.route("/login")
 def login():
-    """Redirect user to Discord's authorization page."""
     if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
         return "OAuth variables not configured in .env", 500
     url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify"
@@ -130,12 +149,10 @@ def login():
 
 @app.route("/callback")
 def callback():
-    """Handle Discord's redirect back to the site."""
     code = request.args.get("code")
     if not code:
         return redirect("/")
     
-    # Exchange code for access token
     data = {
         "client_id": DISCORD_CLIENT_ID,
         "client_secret": DISCORD_CLIENT_SECRET,
@@ -149,7 +166,6 @@ def callback():
         return "Failed to authenticate with Discord", 400
     token = r.json()["access_token"]
     
-    # Fetch user data from Discord
     user_r = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"})
     if user_r.status_code != 200:
         return "Failed to fetch user data", 400
@@ -160,14 +176,12 @@ def callback():
     avatar_hash = user_data.get("avatar")
     avatar_url = f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png" if avatar_hash else None
     
-    # Upsert into database to ensure they exist on the site
     execute_write(
         """INSERT INTO users (user_id, username, avatar_url) VALUES (?, ?, ?)
            ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, avatar_url = COALESCE(excluded.avatar_url, users.avatar_url)""",
         (uid, username, avatar_url)
     )
     
-    # Create web session
     session["user_id"] = uid
     session["username"] = username
     session["avatar_url"] = avatar_url
@@ -183,7 +197,6 @@ def logout():
 
 @app.route("/api/auth/status")
 def auth_status():
-    """Let the frontend HTML know who is logged in."""
     if "user_id" in session:
         return jsonify({
             "logged_in": True, 
@@ -196,6 +209,28 @@ def auth_status():
     return jsonify({"logged_in": False})
 
 
+@app.route("/api/user/customize", methods=["POST"])
+def customize_profile():
+    if "user_id" not in session:
+        return jsonify(error="Unauthorized"), 401
+    
+    data = request.json
+    banner = data.get("banner_url")
+    color = data.get("embed_color")
+    
+    if banner and not banner.startswith(("http://", "https://")):
+        banner = None
+        
+    if color and not re.match(r"^#(?:[0-9a-fA-F]{3}){1,2}$", color):
+        color = None
+        
+    execute_write(
+        "UPDATE users SET banner_url = ?, embed_color = ? WHERE user_id = ?",
+        (banner, color, session["user_id"])
+    )
+    return jsonify(success=True)
+
+
 # --- DATA APIS ---
 
 @app.route("/api/leaderboard")
@@ -204,7 +239,7 @@ def api_leaderboard():
         """SELECT user_id, username, avatar_url, wins, losses, draws FROM users
            WHERE wins + losses + draws > 0
            ORDER BY wins DESC, losses ASC, username COLLATE NOCASE LIMIT 200""",
-        cols=USER_COLS)
+        cols=["user_id", "username", "avatar_url", "wins", "losses", "draws"])
     out = []
     for i, r in enumerate(rows, 1):
         games = r["wins"] + r["losses"] + r["draws"]
@@ -234,48 +269,38 @@ def api_debates():
 
 def profile(user):
     uid = user["user_id"]
-    
-    # 1. Fetch Debates
     rows = query(
         f"""SELECT {DEBATE_SELECT} FROM debates
             WHERE (affirmative_id = ? OR negative_id = ?) AND status = ?
             ORDER BY debate_number DESC""", (uid, uid, FINISHED), DEBATE_COLS)
             
-    # 2. Fetch Fallacies (Fix re-applied here!)
     f_rows = query(
         "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE user_id = ? ORDER BY id DESC",
         (uid,), ["debate_number", "fallacy_name", "reasoning_link"]
     )
-    fallacies = [
-        {"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])}
-        for r in f_rows
-    ]
+    fallacies = [{"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])} for r in f_rows]
 
     debates, outcomes = [], []
     for d in rows:
         item = serialize_debate(d)
         is_aff = d["affirmative_id"] == uid
         res = item["result"]
-        outcome = None if res is None else "D" if res == "draw" else \
-            "W" if (res == "aff") == is_aff else "L"
-        item.update(side="aff" if is_aff else "neg", outcome=outcome,
-                    opponent=item["neg"] if is_aff else item["aff"])
+        outcome = None if res is None else "D" if res == "draw" else "W" if (res == "aff") == is_aff else "L"
+        item.update(side="aff" if is_aff else "neg", outcome=outcome, opponent=item["neg"] if is_aff else item["aff"])
         debates.append(item)
-        if outcome:
-            outcomes.append(outcome)
+        if outcome: outcomes.append(outcome)
             
     streak = 0
     for o in outcomes:
-        if o != outcomes[0]:
-            break
+        if o != outcomes[0]: break
         streak += 1
         
     games = user["wins"] + user["losses"] + user["draws"]
     return {
-        **player(uid, user["username"], user["avatar_url"]), 
-        "wins": user["wins"],
-        "losses": user["losses"], 
-        "draws": user["draws"],
+        **player(uid, user["username"], user["avatar_url"]),
+        "banner_url": safe_url(user.get("banner_url")),
+        "embed_color": user.get("embed_color"),
+        "wins": user["wins"], "losses": user["losses"], "draws": user["draws"],
         "win_rate": round(100 * user["wins"] / games) if games else 0,
         "streak": {"kind": outcomes[0], "length": streak} if outcomes else None,
         "debates": debates,
@@ -286,17 +311,14 @@ def profile(user):
 @app.route("/api/user")
 def api_user():
     q = (request.args.get("q") or "").strip()
-    if not q:
-        return jsonify(error="Enter a username or user ID."), 400
-    base = "SELECT user_id, username, avatar_url, wins, losses, draws FROM users WHERE "
+    if not q: return jsonify(error="Enter a username or user ID."), 400
+    base = "SELECT * FROM users WHERE "
     matches = []
     if re.fullmatch(r"\d{1,18}", q, re.ASCII):
         matches = query(base + "user_id = ?", (int(q),), USER_COLS)
     if not matches:
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        matches = query(base + """username LIKE ? ESCAPE '\\'
-                        ORDER BY wins DESC, username COLLATE NOCASE LIMIT 10""",
-                        (like,), USER_COLS)
+        matches = query(base + """username LIKE ? ESCAPE '\\' ORDER BY wins DESC, username COLLATE NOCASE LIMIT 10""", (like,), USER_COLS)
     if not matches:
         return jsonify(error=f"No debater found for \u201c{q}\u201d."), 404
     exact = [m for m in matches if (m["username"] or "").lower() == q.lower()]
@@ -307,8 +329,7 @@ def api_user():
 
 @app.errorhandler(Exception)
 def on_error(e):
-    if isinstance(e, HTTPException):
-        return e
+    if isinstance(e, HTTPException): return e
     app.logger.exception("Request failed")
     return jsonify(error="Couldn't load data from the database. Check the server log."), 500
 
