@@ -154,7 +154,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = { sort: 'newest', page: 1, pages: 1 };
 const notice = (msg) => `<div class="panel p-8 text-center text-violet-200/60">${esc(msg)}</div>`;
-let currentUser = null; // Track logged in user
+let currentUser = null;
 
 async function api(path, params = {}) {
   const url = new URL(path, location.origin);
@@ -185,13 +185,15 @@ async function checkAuth() {
     if (auth.logged_in) {
       currentUser = auth.user;
       $('#auth-section').innerHTML = `
-        <div class="panel p-2 pr-4 flex items-center gap-3 cursor-pointer hover:border-violet-400 transition-all shadow-md group" onclick="searchUser('${esc(auth.user.id)}')">
-          ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
-          <div class="flex flex-col">
-            <span class="font-bold text-violet-100 group-hover:text-white leading-tight">${esc(auth.user.name)}</span>
-            <span class="text-xs text-violet-300 hover:underline">View My Profile ↗</span>
-          </div>
-          <a href="/logout" onclick="event.stopPropagation()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline ml-3">Log Out</a>
+        <div class="panel p-2 pr-4 flex items-center gap-3 shadow-md">
+          <a href="/u/${encodeURIComponent(auth.user.name)}" class="flex items-center gap-3 group">
+            ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
+            <div class="flex flex-col">
+              <span class="font-bold text-violet-100 group-hover:text-violet-300 leading-tight">${esc(auth.user.name)}</span>
+              <span class="text-xs text-violet-400 underline">View My Profile ↗</span>
+            </div>
+          </a>
+          <a href="/logout" class="text-xs text-rose-400 hover:text-rose-300 hover:underline ml-3">Log Out</a>
         </div>`;
     }
   } catch(e) {}
@@ -294,7 +296,6 @@ function renderProfile(u) {
         <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
       </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
-  // Allow custom theme styling
   const customGlow = u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
   const bannerBg = u.banner_url ? `<div class="absolute inset-0 opacity-30 bg-cover bg-center z-0" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>';
   
@@ -349,7 +350,7 @@ $('#customize-form').addEventListener('submit', async (e) => {
       body: JSON.stringify({ banner_url: $('#cust-banner').value, embed_color: $('#cust-color').value })
     });
     $('#customize-modal').classList.add('hidden');
-    searchUser(currentUser.name); // Reload profile instantly
+    searchUser(currentUser.name);
   } catch(err) { alert('Failed to save customization.'); } 
   finally { btn.textContent = original; }
 });
@@ -386,9 +387,8 @@ if (path.startsWith('/u/')) {
 }
 window.addEventListener('popstate', () => { window.location.reload(); });
 
-// Boot Sequence
 (async () => {
-  await checkAuth(); // Make sure we know who is logged in first
+  await checkAuth();
   loadLeaderboard();
   loadDebates();
 })();
