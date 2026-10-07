@@ -2,4 +2,6 @@ flask
 python-dotenv
 libsql-experimental
 gunicorn
+requests
+
 
