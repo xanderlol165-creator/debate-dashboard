@@ -12,19 +12,19 @@ from werkzeug.exceptions import HTTPException
 
 load_dotenv()
 
-TURSO_URL = os.getenv("TURSO_URL")
-TURSO_TOKEN = os.getenv("TURSO_TOKEN")
-REPLICA_PATH = os.getenv("REPLICA_PATH", "dashboard-replica.db")
-SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL_SECONDS", "30"))
+TURSO_URL = os.environ.get("TURSO_URL")
+TURSO_TOKEN = os.environ.get("TURSO_TOKEN")
+REPLICA_PATH = os.environ.get("REPLICA_PATH", "dashboard-replica.db")
+SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL_SECONDS", "30"))
 FINISHED = "finished"
 
 # Discord OAuth2 Variables
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
+DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI")
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
 
 _lock = threading.Lock()
 _conn = None
@@ -43,7 +43,7 @@ def get_db():
     global _conn, _last_sync
     if _conn is None:
         if not TURSO_URL or not TURSO_TOKEN:
-            raise RuntimeError("TURSO_URL and TURSO_TOKEN must be set in .env")
+            raise RuntimeError("TURSO_URL and TURSO_TOKEN must be set in environment variables")
         _conn = libsql.connect(REPLICA_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
         _conn.sync()
         _last_sync = time.monotonic()
@@ -120,7 +120,6 @@ def serialize_debate(d):
 @app.route("/u/<path:username>")
 def index(username=None):
     og = None
-    # If a specific user profile is linked, generate Discord embed tags
     if username:
         rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (username,))
         if rows:
@@ -142,7 +141,7 @@ def index(username=None):
 @app.route("/login")
 def login():
     if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
-        return "OAuth variables not configured in .env", 500
+        return "OAuth variables not configured in Render environment", 500
     url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify"
     return redirect(url)
 
@@ -335,4 +334,4 @@ def on_error(e):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.getenv("PORT", 5000)), debug=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=True)
