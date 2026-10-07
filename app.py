@@ -117,11 +117,15 @@ def serialize_debate(d):
 # --- ROUTES (INCLUDING DISCORD EMBED INJECTION) ---
 
 @app.route("/")
-@app.route("/u/<path:username>")
-def index(username=None):
+@app.route("/u/<path:identifier>")
+def index(identifier=None):
     og = None
-    if username:
-        rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (username,))
+    if identifier:
+        if identifier.isdigit():
+            rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE user_id = ?", (int(identifier),))
+        else:
+            rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (identifier,))
+            
         if rows:
             user = rows[0]
             color_hex = user.get("embed_color") or "#a855f7"
@@ -273,11 +277,15 @@ def profile(user):
             WHERE (affirmative_id = ? OR negative_id = ?) AND status = ?
             ORDER BY debate_number DESC""", (uid, uid, FINISHED), DEBATE_COLS)
             
-    f_rows = query(
-        "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE user_id = ? ORDER BY id DESC",
-        (uid,), ["debate_number", "fallacy_name", "reasoning_link"]
-    )
-    fallacies = [{"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])} for r in f_rows]
+    fallacies = []
+    try:
+        f_rows = query(
+            "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE user_id = ? ORDER BY id DESC",
+            (uid,), ["debate_number", "fallacy_name", "reasoning_link"]
+        )
+        fallacies = [{"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])} for r in f_rows]
+    except Exception:
+        pass
 
     debates, outcomes = [], []
     for d in rows:
@@ -334,4 +342,4 @@ def on_error(e):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=True)
+    app.run(host="127.0.0.1", port=int(os.getenv("PORT", 5000)), debug=True)
