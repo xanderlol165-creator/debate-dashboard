@@ -9,6 +9,7 @@ import libsql_experimental as libsql
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, redirect, session
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix  # <-- Added ProxyFix
 
 load_dotenv()
 
@@ -18,7 +19,7 @@ REPLICA_PATH = os.environ.get("REPLICA_PATH", "dashboard-replica.db")
 SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL_SECONDS", "30"))
 FINISHED = "finished"
 
-# Discord OAuth2 Variables with robust fallbacks
+# Discord OAuth2 Variables
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1356528530718902386")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://debate-leaderboards.onrender.com/callback")
@@ -26,9 +27,20 @@ DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://debate-le
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "xander_debate_arena_secure_session_key_7734")
 
-# Fix for session cookies over HTTPS on Render (prevents login loop)
+# --- THE SLEDGEHAMMER SECURITY & PROXY FIXES ---
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
+app.config["SESSION_COOKIE_NAME"] = "xander_arena_secure_auth" # Unique cookie name to prevent domain conflicts
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Anti-Caching for APIs: Forces your browser to realize you are actually logged in
+@app.after_request
+def prevent_caching(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 _lock = threading.Lock()
 _conn = None
@@ -43,7 +55,6 @@ USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "ba
 
 
 def get_db():
-    """Initialize or return the database connection securely and ensure schema is up to date."""
     global _conn, _last_sync
     if _conn is None:
         if not TURSO_URL or not TURSO_TOKEN:
@@ -52,7 +63,6 @@ def get_db():
         _conn.sync()
         _last_sync = time.monotonic()
         
-        # Auto-upgrade database for customizations
         cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
         if "banner_url" not in cols:
             _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
@@ -118,7 +128,7 @@ def serialize_debate(d):
     }
 
 
-# --- ROUTES (INCLUDING DISCORD EMBED INJECTION) ---
+# --- ROUTES ---
 
 @app.route("/")
 @app.route("/u/<path:identifier>")
@@ -147,7 +157,7 @@ def index(identifier=None):
     return render_template("index.html", og=og)
 
 
-# --- DISCORD OAUTH2 SYSTEM ---
+# --- DISCORD OAUTH2 ---
 
 @app.route("/login")
 def login():
