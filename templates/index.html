@@ -4,6 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Debate Records</title>
+
+<!-- Jinja injection for Discord Embeds -->
+{% if og %}
+  <meta property="og:title" content="{{ og.title }}">
+  <meta property="og:description" content="{{ og.description }}">
+  {% if og.image %}
+    <meta property="og:image" content="{{ og.image }}">
+    <meta name="twitter:card" content="summary_large_image">
+  {% endif %}
+  <meta name="theme-color" content="{{ og.color }}">
+{% else %}
+  <meta property="og:title" content="Debate Records">
+  <meta property="og:description" content="Every finished debate, ranked and searchable.">
+  <meta name="theme-color" content="#a855f7">
+{% endif %}
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -38,15 +54,14 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
 </style>
 </head>
 <body class="font-sans min-h-screen antialiased">
-<div class="max-w-5xl mx-auto px-4 pb-16">
+<div class="max-w-5xl mx-auto px-4 pb-16 relative">
 
   <header class="pt-10 pb-6 flex flex-col sm:flex-row justify-between items-start gap-4">
     <div>
-      <h1 class="text-4xl sm:text-6xl font-bold tracking-tight neon">Debate Records</h1>
+      <h1 class="text-4xl sm:text-6xl font-bold tracking-tight neon cursor-pointer" onclick="window.location.href='/'">Debate Records</h1>
       <p class="mt-2 text-violet-200/60">Every finished debate, ranked and searchable.</p>
     </div>
     
-    <!-- Discord Auth Section -->
     <div id="auth-section">
       <a href="/login" class="panel px-5 py-2 flex items-center gap-2 hover:bg-[#5865F2]/20 border-violet-500/40 hover:border-[#5865F2] transition-colors shadow-lg">
         <span class="text-[#5865F2] text-xl">👾</span> 
@@ -62,7 +77,6 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
     <button class="btn px-5 sm:px-7">Search</button>
   </form>
 
-  <!-- Discord Server CTA Banner -->
   <a href="https://discord.gg/YOUR_INVITE_CODE_HERE" target="_blank" rel="noopener noreferrer" class="panel p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-violet-500/40 bg-[#5865F2]/10 hover:border-[#5865F2] hover:bg-[#5865F2]/20 transition-all group block">
     <div class="flex items-center gap-3">
       <div class="text-3xl">👾</div>
@@ -80,16 +94,13 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
     <div class="panel p-3 sm:p-4"><div id="stat-top" class="text-lg sm:text-3xl font-bold text-violet-200 truncate">–</div><div class="text-xs sm:text-sm text-violet-200/50">Most wins</div></div>
   </section>
 
-  <!-- Cleaned Navigation -->
   <nav class="flex gap-1 mb-5 overflow-x-auto" role="tablist">
     <button class="tab" role="tab" data-tab="leaderboard" aria-selected="true">Leaderboard</button>
     <button class="tab" role="tab" data-tab="debates" aria-selected="false">All debates</button>
   </nav>
 
-  <!-- Wins-Only Leaderboard -->
-  <section id="tab-leaderboard" class="overflow-hidden space-y-3">
-    <!-- Populated by JS -->
-  </section>
+  <!-- Leaderboard -->
+  <section id="tab-leaderboard" class="overflow-hidden space-y-3"></section>
 
   <!-- Debates -->
   <section id="tab-debates" hidden>
@@ -110,10 +121,32 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
     </div>
   </section>
 
-  <!-- Profile (Flashcard) -->
+  <!-- Profile -->
   <section id="tab-profile" hidden>
     <div id="profile-box"><div class="panel p-8 text-center text-violet-200/50">Search for a debater above to see their record and past debates.</div></div>
   </section>
+
+  <!-- Customization Modal -->
+  <div id="customize-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="panel p-6 w-full max-w-md glow relative">
+      <h3 class="text-xl font-bold mb-4 neon">Customize Profile Embed</h3>
+      <form id="customize-form" class="space-y-4">
+        <div>
+          <label class="block text-sm text-violet-200/70 mb-1">Banner Image URL</label>
+          <input id="cust-banner" type="url" class="w-full bg-black/50 border border-violet-500/30 rounded-lg px-3 py-2 focus:border-violet-400" placeholder="https://i.imgur.com/...png">
+          <p class="text-xs text-violet-200/40 mt-1">Shows up behind your profile and in Discord links.</p>
+        </div>
+        <div>
+          <label class="block text-sm text-violet-200/70 mb-1">Theme Color</label>
+          <input id="cust-color" type="color" class="w-full h-10 bg-black/50 border border-violet-500/30 rounded-lg cursor-pointer" value="#a855f7">
+        </div>
+        <div class="flex justify-end gap-3 mt-6">
+          <button type="button" onclick="$('#customize-modal').classList.add('hidden')" class="btn bg-white/10 hover:bg-white/20 !bg-none">Cancel</button>
+          <button type="submit" id="cust-save" class="btn px-5">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -121,6 +154,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state = { sort: 'newest', page: 1, pages: 1 };
 const notice = (msg) => `<div class="panel p-8 text-center text-violet-200/60">${esc(msg)}</div>`;
+let currentUser = null; // Track logged in user
 
 async function api(path, params = {}) {
   const url = new URL(path, location.origin);
@@ -133,26 +167,23 @@ async function api(path, params = {}) {
 
 const userLink = (p, cls = '') => `<button type="button" class="link ${cls}" data-uid="${esc(p.id)}">${esc(p.name)}</button>`;
 
-// Helper function to render an avatar or fallback letter
 const avatarHtml = (name, url, sizeClass) => url ? 
-  `<img src="${esc(url)}" alt="${esc(name)}" class="${sizeClass} rounded-full object-cover shadow-md">` : 
-  `<div class="${sizeClass} rounded-full rank1 flex items-center justify-center font-bold shadow-md">${esc(name.slice(0, 1).toUpperCase())}</div>`;
+  `<img src="${esc(url)}" alt="${esc(name)}" class="${sizeClass} rounded-full object-cover shadow-md z-10 relative">` : 
+  `<div class="${sizeClass} rounded-full rank1 flex items-center justify-center font-bold shadow-md z-10 relative">${esc(name.slice(0, 1).toUpperCase())}</div>`;
 
 function showTab(name) {
   document.querySelectorAll('[data-tab]').forEach(t => t.setAttribute('aria-selected', t.dataset.tab === name));
   ['leaderboard', 'debates', 'profile'].forEach(n => { $('#tab-' + n).hidden = n !== name; });
-  
-  // Clear the URL back to normal if they click away from the profile tab
   if (name !== 'profile' && window.location.pathname !== '/') {
     window.history.pushState({}, '', '/');
   }
 }
 
-/* Authentication Check */
 async function checkAuth() {
   try {
     const auth = await api('/api/auth/status');
     if (auth.logged_in) {
+      currentUser = auth.user;
       $('#auth-section').innerHTML = `
         <div class="panel p-2 pr-4 flex items-center gap-3">
           ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
@@ -165,7 +196,6 @@ async function checkAuth() {
   } catch(e) {}
 }
 
-/* Wins-Only Leaderboard */
 async function loadLeaderboard() {
   $('#tab-leaderboard').innerHTML = notice('Loading leaderboard…');
   try {
@@ -192,7 +222,6 @@ async function loadLeaderboard() {
   } catch (e) { $('#tab-leaderboard').innerHTML = notice(e.message); }
 }
 
-/* Debates */
 const resultLabel = { aff: 'Affirmative won', neg: 'Negative won', draw: 'Draw' };
 
 function sideBox(label, p, side, result) {
@@ -239,12 +268,11 @@ async function loadDebates() {
   } catch (e) { $('#debate-list').innerHTML = notice(e.message); }
 }
 
-/* Profile / Flashcard */
 const chip = { W: ['Win', 'var(--win)'], L: ['Loss', 'var(--loss)'], D: ['Draw', 'var(--draw)'] };
 
 function renderProfile(u) {
   const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toLowerCase()}${u.streak.length > 1 && u.streak.kind !== 'L' ? 's' : u.streak.length > 1 ? 'es' : ''}` : '–';
-  const stat = (v, l, c) => `<div class="rounded-xl bg-black/30 p-3"><div class="text-2xl font-bold" style="color:${c}">${v}</div><div class="text-xs text-violet-200/50">${l}</div></div>`;
+  const stat = (v, l, c) => `<div class="rounded-xl bg-black/30 p-3 z-10 relative"><div class="text-2xl font-bold" style="color:${c}">${v}</div><div class="text-xs text-violet-200/50">${l}</div></div>`;
   const form = u.debates.filter(d => d.outcome).slice(0, 10).map(d => `<span title="Debate #${d.number}: ${chip[d.outcome][0]}" class="w-3 h-3 rounded-full" style="background:${chip[d.outcome][1]}"></span>`).join('');
   
   const rows = u.debates.map(d => `<li class="py-3 border-b border-violet-500/10 last:border-0">
@@ -265,11 +293,17 @@ function renderProfile(u) {
         <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
       </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
+  // Allow custom theme styling
+  const customGlow = u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
+  const bannerBg = u.banner_url ? `<div class="absolute inset-0 opacity-30 bg-cover bg-center z-0" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>';
+  
+  const isMe = currentUser && String(currentUser.id) === String(u.id);
+  const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/40 border border-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg backdrop-blur-md transition-colors shadow">⚙️ Customize</button>` : '';
+
   $('#profile-box').innerHTML = `
-    <div class="panel p-5 glow relative overflow-hidden">
-      <!-- Decorative Background element -->
-      <div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>
-      
+    <div class="panel p-5 glow relative overflow-hidden" style="${customGlow}">
+      ${bannerBg}
+      ${customizeBtn}
       <div class="flex items-center gap-4 relative z-10">
         ${avatarHtml(u.name, u.avatar, 'w-16 h-16 text-3xl')}
         <div class="min-w-0">
@@ -281,7 +315,7 @@ function renderProfile(u) {
         ${stat(u.wins, 'Wins', 'var(--win)')}${stat(u.losses, 'Losses', 'var(--loss)')}${stat(u.draws, 'Draws', 'var(--draw)')}
         ${stat(u.win_rate + '%', 'Win rate', '#d8b4fe')}${stat(streak, 'Current streak', '#d8b4fe')}
       </div>
-      ${form ? `<div class="mt-4 flex items-center gap-2 text-sm text-violet-200/50">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
+      ${form ? `<div class="mt-4 flex items-center gap-2 text-sm text-violet-200/50 z-10 relative">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
     </div>
     
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
@@ -295,6 +329,29 @@ function renderProfile(u) {
       </div>
     </div>`;
 }
+
+function openCustomizeModal(banner, color) {
+  $('#cust-banner').value = banner || '';
+  $('#cust-color').value = color || '#a855f7';
+  $('#customize-modal').classList.remove('hidden');
+}
+
+$('#customize-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('#cust-save');
+  const original = btn.textContent;
+  btn.textContent = 'Saving...';
+  try {
+    await fetch('/api/user/customize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ banner_url: $('#cust-banner').value, embed_color: $('#cust-color').value })
+    });
+    $('#customize-modal').classList.add('hidden');
+    searchUser(currentUser.name); // Reload profile instantly
+  } catch(err) { alert('Failed to save customization.'); } 
+  finally { btn.textContent = original; }
+});
 
 async function searchUser(q) {
   showTab('profile');
@@ -320,7 +377,6 @@ $('#sort').addEventListener('change', (e) => { state.sort = e.target.value; stat
 $('#prev').addEventListener('click', () => { state.page--; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
 $('#next').addEventListener('click', () => { state.page++; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
 
-// URL Routing check on load
 const path = window.location.pathname;
 if (path.startsWith('/u/')) {
   const username = decodeURIComponent(path.substring(3));
@@ -329,9 +385,12 @@ if (path.startsWith('/u/')) {
 }
 window.addEventListener('popstate', () => { window.location.reload(); });
 
-checkAuth();
-loadLeaderboard();
-loadDebates();
+// Boot Sequence
+(async () => {
+  await checkAuth(); // Make sure we know who is logged in first
+  loadLeaderboard();
+  loadDebates();
+})();
 </script>
 </body>
 </html>
