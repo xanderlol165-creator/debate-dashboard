@@ -46,13 +46,14 @@ _lock = threading.Lock()
 _conn = None
 _last_sync = 0.0
 
+# CASTING TO TEXT FIXES THE 64-BIT PRECISION LOSS BUG
+USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
+USER_SELECT = "CAST(user_id AS TEXT), username, avatar_url, wins, losses, draws, banner_url, embed_color"
+
 DEBATE_COLS = ["debate_number", "notion", "affirmative_id", "affirmative_name",
                "negative_id", "negative_name", "winner_id", "result",
                "start_link", "conclusion_link"]
-DEBATE_SELECT = ", ".join(DEBATE_COLS)
-
-USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
-USER_SELECT = ", ".join(USER_COLS)
+DEBATE_SELECT = "debate_number, notion, CAST(affirmative_id AS TEXT), affirmative_name, CAST(negative_id AS TEXT), negative_name, CAST(winner_id AS TEXT), result, start_link, conclusion_link"
 
 
 def get_db():
@@ -64,7 +65,7 @@ def get_db():
         _conn.sync()
         _last_sync = time.monotonic()
         
-        # Auto-upgrade database to ensure all required columns exist (fixes the 500 crash)
+        # Auto-upgrade database to ensure all required columns exist
         try:
             cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
             if "banner_url" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
@@ -143,7 +144,7 @@ def index(identifier=None):
     if identifier:
         try:
             if identifier.isdigit():
-                rows = query(f"SELECT {USER_SELECT} FROM users WHERE user_id = ?", (int(identifier),), USER_COLS)
+                rows = query(f"SELECT {USER_SELECT} FROM users WHERE user_id = ?", (identifier,), USER_COLS)
             else:
                 rows = query(f"SELECT {USER_SELECT} FROM users WHERE username COLLATE NOCASE = ?", (identifier,), USER_COLS)
                 
@@ -198,7 +199,7 @@ def callback():
         return "Failed to fetch user data", 400
     user_data = user_r.json()
     
-    uid = int(user_data["id"])
+    uid = str(user_data["id"]) # Enforce string type early
     username = user_data.get("global_name") or user_data.get("username")
     avatar_hash = user_data.get("avatar")
     avatar_url = f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png" if avatar_hash else None
@@ -265,7 +266,7 @@ def customize_profile():
         
     execute_write(
         "UPDATE users SET banner_url = ?, embed_color = ? WHERE user_id = ?",
-        (banner, color, session["user_id"])
+        (banner, color, str(session["user_id"]))
     )
     return jsonify(success=True)
 
@@ -310,7 +311,7 @@ def api_debates():
 
 
 def profile(user):
-    uid = user["user_id"]
+    uid = str(user["user_id"])
     rows = query(
         f"""SELECT {DEBATE_SELECT} FROM debates
             WHERE (affirmative_id = ? OR negative_id = ?) AND status = ?
@@ -366,7 +367,7 @@ def api_user():
     matches = []
     
     if re.fullmatch(r"\d{1,20}", q, re.ASCII):
-        matches = query(base + "user_id = ?", (int(q),), USER_COLS)
+        matches = query(base + "user_id = ?", (q,), USER_COLS)
     if not matches:
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         matches = query(base + """username LIKE ? ESCAPE '\\' ORDER BY wins DESC, username COLLATE NOCASE LIMIT 10""", (like,), USER_COLS)
