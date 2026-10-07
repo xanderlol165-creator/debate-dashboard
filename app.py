@@ -18,13 +18,13 @@ REPLICA_PATH = os.environ.get("REPLICA_PATH", "dashboard-replica.db")
 SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL_SECONDS", "30"))
 FINISHED = "finished"
 
-# Discord OAuth2 Variables
-DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID")
+# Discord OAuth2 Variables with robust fallbacks
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1356528530718902386")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
-DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI")
+DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://debate-leaderboards.onrender.com/callback")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "xander_debate_arena_secure_session_key_7734")
 
 _lock = threading.Lock()
 _conn = None
@@ -140,8 +140,8 @@ def index(username=None):
 
 @app.route("/login")
 def login():
-    if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
-        return "OAuth variables not configured in Render environment", 500
+    if not DISCORD_CLIENT_SECRET:
+        return "DISCORD_CLIENT_SECRET is missing in Render environment", 500
     url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify"
     return redirect(url)
 
@@ -162,7 +162,7 @@ def callback():
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     r = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
     if r.status_code != 200:
-        return "Failed to authenticate with Discord", 400
+        return f"Failed to authenticate with Discord: {r.text}", 400
     token = r.json()["access_token"]
     
     user_r = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"})
