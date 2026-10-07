@@ -52,6 +52,7 @@ DEBATE_COLS = ["debate_number", "notion", "affirmative_id", "affirmative_name",
 DEBATE_SELECT = ", ".join(DEBATE_COLS)
 
 USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
+USER_SELECT = ", ".join(USER_COLS)
 
 
 def get_db():
@@ -63,13 +64,18 @@ def get_db():
         _conn.sync()
         _last_sync = time.monotonic()
         
-        cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "banner_url" not in cols:
-            _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
-        if "embed_color" not in cols:
-            _conn.execute("ALTER TABLE users ADD COLUMN embed_color TEXT")
-        _conn.commit()
-        
+        # Auto-upgrade database to ensure all required columns exist (fixes the 500 crash)
+        try:
+            cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
+            if "banner_url" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
+            if "embed_color" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN embed_color TEXT")
+            if "wins" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN wins INTEGER DEFAULT 0")
+            if "losses" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN losses INTEGER DEFAULT 0")
+            if "draws" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN draws INTEGER DEFAULT 0")
+            _conn.commit()
+        except Exception as e:
+            app.logger.error(f"Migration error: {e}")
+            
     elif time.monotonic() - _last_sync > SYNC_INTERVAL:
         try:
             _conn.sync()
@@ -137,9 +143,9 @@ def index(identifier=None):
     if identifier:
         try:
             if identifier.isdigit():
-                rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE user_id = ?", (int(identifier),), USER_COLS)
+                rows = query(f"SELECT {USER_SELECT} FROM users WHERE user_id = ?", (int(identifier),), USER_COLS)
             else:
-                rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (identifier,), USER_COLS)
+                rows = query(f"SELECT {USER_SELECT} FROM users WHERE username COLLATE NOCASE = ?", (identifier,), USER_COLS)
                 
             if rows:
                 user = rows[0]
@@ -269,10 +275,10 @@ def customize_profile():
 @app.route("/api/leaderboard")
 def api_leaderboard():
     rows = query(
-        """SELECT user_id, username, avatar_url, wins, losses, draws FROM users
+        f"""SELECT {USER_SELECT} FROM users
            WHERE wins + losses + draws > 0
            ORDER BY wins DESC, losses ASC, username COLLATE NOCASE LIMIT 200""",
-        cols=["user_id", "username", "avatar_url", "wins", "losses", "draws"])
+        cols=USER_COLS)
     out = []
     for i, r in enumerate(rows, 1):
         wins = r.get("wins") or 0
@@ -356,7 +362,7 @@ def profile(user):
 def api_user():
     q = (request.args.get("q") or "").strip()
     if not q: return jsonify(error="Enter a username or user ID."), 400
-    base = "SELECT * FROM users WHERE "
+    base = f"SELECT {USER_SELECT} FROM users WHERE "
     matches = []
     
     if re.fullmatch(r"\d{1,20}", q, re.ASCII):
