@@ -129,7 +129,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
   <!-- Customization Modal -->
   <div id="customize-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="panel p-6 w-full max-w-md glow relative">
-      <h3 class="text-xl font-bold mb-4 neon">Customize Discord Embed</h3>
+      <h3 class="text-xl font-bold mb-4 neon">Customize Profile Embed</h3>
       <form id="customize-form" class="space-y-4">
         <div>
           <label class="block text-sm text-violet-200/70 mb-1">Banner Image URL</label>
@@ -384,7 +384,6 @@ async function searchUser(q) {
   try {
     const data = await api('/api/user', { q });
     if (data.user) {
-      // Instantly rewrite URL to their username (NO discord IDs in URL)
       window.history.pushState({}, '', '/u/' + encodeURIComponent(data.user.name));
       return renderProfile(data.user);
     }
@@ -409,15 +408,21 @@ $('#sort').addEventListener('change', (e) => { state.sort = e.target.value; stat
 $('#prev').addEventListener('click', () => { state.page--; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
 $('#next').addEventListener('click', () => { state.page++; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
 
-const path = window.location.pathname;
-if (path.startsWith('/u/')) {
-  const identifier = decodeURIComponent(path.substring(3));
-  searchUser(identifier);
-}
 window.addEventListener('popstate', () => { window.location.reload(); });
 
+// BOOT SEQUENCE (FIXED)
 (async () => {
+  // 1. ALWAYS wait for the login check to finish FIRST
   await checkAuth();
+  
+  // 2. ONLY THEN check if we need to load a profile from the URL
+  const path = window.location.pathname;
+  if (path.startsWith('/u/')) {
+    const identifier = decodeURIComponent(path.substring(3));
+    searchUser(identifier);
+  }
+  
+  // 3. Load the rest of the page
   loadLeaderboard();
   loadDebates();
 })();
