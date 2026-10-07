@@ -129,7 +129,7 @@ tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', '
   <!-- Customization Modal -->
   <div id="customize-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="panel p-6 w-full max-w-md glow relative">
-      <h3 class="text-xl font-bold mb-4 neon">Customize Profile Embed</h3>
+      <h3 class="text-xl font-bold mb-4 neon">Customize Discord Embed</h3>
       <form id="customize-form" class="space-y-4">
         <div>
           <label class="block text-sm text-violet-200/70 mb-1">Banner Image URL</label>
@@ -190,15 +190,16 @@ async function checkAuth() {
         if (banner) banner.style.display = 'none';
       }
 
+      // Hard web link so it cleanly routes to /u/username
       $('#auth-section').innerHTML = `
         <div class="panel p-2 pr-4 flex items-center gap-3 shadow-md">
-          <div onclick="searchUser('${esc(auth.user.id)}'); window.scrollTo({ top: 0, behavior: 'smooth' });" class="flex items-center gap-3 group cursor-pointer">
+          <a href="/u/${encodeURIComponent(auth.user.name)}" class="flex items-center gap-3 group cursor-pointer">
             ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
             <div class="flex flex-col">
               <span class="font-bold text-violet-100 group-hover:text-violet-300 leading-tight">${esc(auth.user.name)}</span>
               <span class="text-xs text-violet-400 underline">View My Profile ↗</span>
             </div>
-          </div>
+          </a>
           <a href="/logout" class="text-xs text-rose-400 hover:text-rose-300 hover:underline ml-3">Log Out</a>
         </div>`;
     }
@@ -280,10 +281,16 @@ async function loadDebates() {
 const chip = { W: ['Win', 'var(--win)'], L: ['Loss', 'var(--loss)'], D: ['Draw', 'var(--draw)'] };
 
 function renderProfile(u) {
+  // Check if it's the logged-in user viewing their own profile
   const isMe = currentUser && String(currentUser.id) === String(u.id);
 
-  const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toLowerCase()}${u.streak.length > 1 && u.streak.kind !== 'L' ? 's' : u.streak.length > 1 ? 'es' : ''}` : '–';
-  const stat = (v, l, c) => `<div class="rounded-xl bg-black/30 p-3 z-10 relative"><div class="text-2xl font-bold" style="color:${c}">${v}</div><div class="text-xs text-violet-200/50">${l}</div></div>`;
+  const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toUpperCase()}` : '0';
+  const stat = (v, l, c) => `
+    <div class="flex flex-col items-center justify-center p-3 sm:p-4 rounded-xl sm:rounded-2xl bg-black/40 border border-white/5 backdrop-blur-sm shadow-inner">
+      <div class="text-2xl sm:text-3xl font-black" style="color:${c}">${v}</div>
+      <div class="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-violet-200/50 mt-1">${l}</div>
+    </div>`;
+    
   const form = u.debates.filter(d => d.outcome).slice(0, 10).map(d => `<span title="Debate #${d.number}: ${chip[d.outcome][0]}" class="w-3 h-3 rounded-full" style="background:${chip[d.outcome][1]}"></span>`).join('');
   
   const rows = u.debates.map(d => `<li class="py-3 border-b border-violet-500/10 last:border-0">
@@ -304,32 +311,39 @@ function renderProfile(u) {
         <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
       </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
-  const customGlow = isMe && u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
-  const bannerBg = isMe && u.banner_url ? `<div class="absolute inset-0 opacity-30 bg-cover bg-center z-0" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>';
-  const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/40 border border-white/10 hover:bg-white/20 text-white px-3 py-1.5 rounded-lg backdrop-blur-md transition-colors shadow">⚙️ Customize Profile</button>` : '';
+  // Customize settings and buttons only appear if isMe == true
+  const customGlow = u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
+  const bannerBg = u.banner_url ? `<div class="absolute inset-0 z-0 bg-cover bg-center opacity-40" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] via-[#08060f]/80 to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-full h-full bg-gradient-to-b from-violet-500/20 to-transparent z-0"></div>';
+  const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/60 border border-white/20 hover:bg-white/20 text-white px-4 py-2 rounded-xl backdrop-blur-md transition-colors shadow-lg font-semibold">⚙️ Customize Profile</button>` : '';
 
+  // The UniteAPI-Style Flashcard HTML
   $('#profile-box').innerHTML = `
-    <div class="panel p-5 glow relative overflow-hidden" style="${customGlow}">
+    <div class="panel glow relative overflow-hidden flex flex-col mb-6 rounded-2xl" style="${customGlow}">
       ${bannerBg}
       ${customizeBtn}
-      <div class="flex items-center gap-4 relative z-10">
-        ${avatarHtml(u.name, u.avatar, 'w-16 h-16 text-3xl')}
-        <div class="min-w-0">
-          <h2 class="text-3xl font-bold truncate neon">${esc(u.name)}</h2>
-          <div class="text-xs text-violet-200/40 break-all">ID ${esc(u.id)}</div>
+      
+      <div class="relative z-10 p-8 sm:p-12 flex flex-col sm:flex-row items-center sm:items-end gap-6">
+         ${avatarHtml(u.name, u.avatar, 'w-28 h-28 sm:w-36 sm:h-36 text-6xl border-4 border-[#08060f] shadow-2xl')}
+         <div class="flex flex-col items-center sm:items-start text-center sm:text-left mb-2">
+           <h2 class="text-4xl sm:text-5xl font-black tracking-tight neon mb-2">${esc(u.name)}</h2>
+           <div class="text-xs font-bold text-violet-200/50 bg-black/50 px-3 py-1.5 rounded-full border border-white/10 uppercase tracking-wider">ID: ${esc(u.id)}</div>
+         </div>
+      </div>
+
+      <div class="relative z-10 bg-black/40 border-t border-white/5 p-4 sm:p-6">
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          ${stat(u.win_rate + '%', 'Win Rate', '#d8b4fe')}
+          ${stat(u.wins || 0, 'Wins', 'var(--win)')}
+          ${stat(u.losses || 0, 'Losses', 'var(--loss)')}
+          ${stat(u.draws || 0, 'Stalemates', 'var(--draw)')}
+          ${stat(streak, 'Streak', '#d8b4fe')}
         </div>
       </div>
-      <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-6 relative z-10">
-        ${stat(u.wins || 0, 'Wins', 'var(--win)')}
-        ${stat(u.losses || 0, 'Losses', 'var(--loss)')}
-        ${stat(u.draws || 0, 'Stalemates', 'var(--draw)')}
-        ${stat(u.win_rate + '%', 'Win rate', '#d8b4fe')}
-        ${stat(streak, 'Current streak', '#d8b4fe')}
-      </div>
-      ${form ? `<div class="mt-4 flex items-center gap-2 text-sm text-violet-200/50 z-10 relative">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
+      
+      ${form ? `<div class="p-4 flex items-center justify-center sm:justify-start gap-2 text-sm text-violet-200/50 z-10 relative bg-black/20">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
     </div>
     
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="panel p-4">
         <h3 class="font-semibold mb-1">Past debates (${u.debates.length})</h3>
         <ul class="max-h-[32rem] overflow-y-auto scroll pr-2">${rows || '<li class="py-6 text-center text-violet-200/50">No finished debates for this debater.</li>'}</ul>
@@ -370,6 +384,7 @@ async function searchUser(q) {
   try {
     const data = await api('/api/user', { q });
     if (data.user) {
+      // Instantly rewrite URL to their username (NO discord IDs in URL)
       window.history.pushState({}, '', '/u/' + encodeURIComponent(data.user.name));
       return renderProfile(data.user);
     }
