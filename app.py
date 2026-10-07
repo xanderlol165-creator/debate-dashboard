@@ -121,22 +121,25 @@ def serialize_debate(d):
 def index(identifier=None):
     og = None
     if identifier:
-        if identifier.isdigit():
-            rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE user_id = ?", (int(identifier),))
-        else:
-            rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (identifier,))
-            
-        if rows:
-            user = rows[0]
-            color_hex = user.get("embed_color") or "#a855f7"
-            image_url = user.get("banner_url") or user.get("avatar_url")
-            
-            og = {
-                "title": f"🏆 {user['wins']} Wins | {user['username']}'s Record",
-                "description": f"View {user['username']}'s full debate history on the leaderboards.",
-                "image": image_url,
-                "color": color_hex
-            }
+        try:
+            if identifier.isdigit():
+                rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE user_id = ?", (int(identifier),), USER_COLS)
+            else:
+                rows = query("SELECT username, wins, avatar_url, banner_url, embed_color FROM users WHERE username COLLATE NOCASE = ?", (identifier,), USER_COLS)
+                
+            if rows:
+                user = rows[0]
+                color_hex = user.get("embed_color") or "#a855f7"
+                image_url = user.get("banner_url") or user.get("avatar_url")
+                
+                og = {
+                    "title": f"🏆 {user['wins']} Wins | {user['username']}'s Record",
+                    "description": f"View {user['username']}'s full debate history on the leaderboards.",
+                    "image": image_url,
+                    "color": color_hex
+                }
+        except Exception:
+            pass
     return render_template("index.html", og=og)
 
 
@@ -342,4 +345,4 @@ def on_error(e):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.getenv("PORT", 5000)), debug=True)
+    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", 5000)), debug=True)
