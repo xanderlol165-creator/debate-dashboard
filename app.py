@@ -9,7 +9,7 @@ import libsql_experimental as libsql
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, redirect, session
 from werkzeug.exceptions import HTTPException
-from werkzeug.middleware.proxy_fix import ProxyFix  # <-- Added ProxyFix
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 load_dotenv()
 
@@ -23,17 +23,17 @@ FINISHED = "finished"
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1356528530718902386")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://debate-leaderboards.onrender.com/callback")
+DISCORD_GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "1504171463849021450")
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "xander_debate_arena_secure_session_key_7734")
 
-# --- THE SLEDGEHAMMER SECURITY & PROXY FIXES ---
+# Proxy and Cookie Fixes for Render HTTPS
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-app.config["SESSION_COOKIE_NAME"] = "xander_arena_secure_auth" # Unique cookie name to prevent domain conflicts
+app.config["SESSION_COOKIE_NAME"] = "debate_arena_auth_session"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
-# Anti-Caching for APIs: Forces your browser to realize you are actually logged in
 @app.after_request
 def prevent_caching(response):
     if request.path.startswith("/api/"):
@@ -145,9 +145,10 @@ def index(identifier=None):
                 user = rows[0]
                 color_hex = user.get("embed_color") or "#a855f7"
                 image_url = user.get("banner_url") or user.get("avatar_url")
+                wins = user.get("wins") or 0
                 
                 og = {
-                    "title": f"🏆 {user['wins']} Wins | {user['username']}'s Record",
+                    "title": f"🏆 {wins} Wins | {user['username']}'s Record",
                     "description": f"View {user['username']}'s full debate history on the leaderboards.",
                     "image": image_url,
                     "color": color_hex
@@ -163,7 +164,7 @@ def index(identifier=None):
 def login():
     if not DISCORD_CLIENT_SECRET:
         return "DISCORD_CLIENT_SECRET is missing in Render environment", 500
-    url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify"
+    url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify%20guilds"
     return redirect(url)
 
 
@@ -195,16 +196,27 @@ def callback():
     username = user_data.get("global_name") or user_data.get("username")
     avatar_hash = user_data.get("avatar")
     avatar_url = f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png" if avatar_hash else None
+
+    # Check if user is in your server
+    guilds_r = requests.get("https://discord.com/api/users/@me/guilds", headers={"Authorization": f"Bearer {token}"})
+    in_server = False
+    if guilds_r.status_code == 200:
+        guilds = guilds_r.json()
+        in_server = any(str(g["id"]) == DISCORD_GUILD_ID for g in guilds)
     
     execute_write(
-        """INSERT INTO users (user_id, username, avatar_url) VALUES (?, ?, ?)
-           ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, avatar_url = COALESCE(excluded.avatar_url, users.avatar_url)""",
+        """INSERT INTO users (user_id, username, avatar_url, wins, losses, draws) 
+           VALUES (?, ?, ?, 0, 0, 0)
+           ON CONFLICT(user_id) DO UPDATE SET 
+           username = excluded.username, 
+           avatar_url = COALESCE(excluded.avatar_url, users.avatar_url)""",
         (uid, username, avatar_url)
     )
     
     session["user_id"] = uid
     session["username"] = username
     session["avatar_url"] = avatar_url
+    session["in_server"] = in_server
     
     return redirect("/")
 
@@ -220,6 +232,7 @@ def auth_status():
     if "user_id" in session:
         return jsonify({
             "logged_in": True, 
+            "in_server": session.get("in_server", False),
             "user": {
                 "id": str(session["user_id"]), 
                 "name": session["username"], 
@@ -262,12 +275,15 @@ def api_leaderboard():
         cols=["user_id", "username", "avatar_url", "wins", "losses", "draws"])
     out = []
     for i, r in enumerate(rows, 1):
-        games = r["wins"] + r["losses"] + r["draws"]
+        wins = r.get("wins") or 0
+        losses = r.get("losses") or 0
+        draws = r.get("draws") or 0
+        games = wins + losses + draws
         out.append({
             "rank": i, 
             **player(r["user_id"], r["username"], r["avatar_url"]),
-            "wins": r["wins"], "losses": r["losses"], "draws": r["draws"],
-            "win_rate": round(100 * r["wins"] / games) if games else 0
+            "wins": wins, "losses": losses, "draws": draws,
+            "win_rate": round(100 * wins / games) if games else 0
         })
     return jsonify({"rows": out})
 
@@ -319,13 +335,17 @@ def profile(user):
         if o != outcomes[0]: break
         streak += 1
         
-    games = user["wins"] + user["losses"] + user["draws"]
+    wins = user.get("wins") or 0
+    losses = user.get("losses") or 0
+    draws = user.get("draws") or 0
+    games = wins + losses + draws
+    
     return {
         **player(uid, user["username"], user["avatar_url"]),
         "banner_url": safe_url(user.get("banner_url")),
         "embed_color": user.get("embed_color"),
-        "wins": user["wins"], "losses": user["losses"], "draws": user["draws"],
-        "win_rate": round(100 * user["wins"] / games) if games else 0,
+        "wins": wins, "losses": losses, "draws": draws,
+        "win_rate": round(100 * wins / games) if games else 0,
         "streak": {"kind": outcomes[0], "length": streak} if outcomes else None,
         "debates": debates,
         "fallacies": fallacies
@@ -338,7 +358,8 @@ def api_user():
     if not q: return jsonify(error="Enter a username or user ID."), 400
     base = "SELECT * FROM users WHERE "
     matches = []
-    if re.fullmatch(r"\d{1,18}", q, re.ASCII):
+    
+    if re.fullmatch(r"\d{1,20}", q, re.ASCII):
         matches = query(base + "user_id = ?", (int(q),), USER_COLS)
     if not matches:
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
