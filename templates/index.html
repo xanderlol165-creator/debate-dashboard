@@ -1,360 +1,337 @@
-"""Cloud SQLite persistence via Turso."""
-import json
-import logging
-from contextlib import contextmanager
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Debate Records</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { fontFamily: { sans: ['"Space Grotesk"', 'system-ui', 'sans-serif'] } } } };
+</script>
+<style>
+  :root { --violet:#a855f7; --orchid:#d946ef; --win:#4ade80; --loss:#fb7185; --draw:#fbbf24; }
+  body { background:#08060f; color:#e9e4f5;
+    background-image: radial-gradient(60rem 30rem at 15% -10%, rgba(168,85,247,.22), transparent 60%),
+                      radial-gradient(40rem 25rem at 100% 0%, rgba(217,70,239,.12), transparent 60%);
+    background-attachment: fixed; }
+  .panel { background:rgba(20,14,36,.7); border:1px solid rgba(168,85,247,.22); border-radius:1rem;
+    backdrop-filter: blur(8px); }
+  .neon { color:#d8b4fe; text-shadow:0 0 18px rgba(168,85,247,.8), 0 0 42px rgba(168,85,247,.45); }
+  .glow { box-shadow:0 0 0 1px rgba(168,85,247,.6), 0 0 28px rgba(168,85,247,.35); }
+  .btn { background:linear-gradient(135deg,#9333ea,#c026d3); color:#fff; border-radius:.75rem; font-weight:600; }
+  .btn:hover { filter:brightness(1.15); box-shadow:0 0 22px rgba(168,85,247,.55); }
+  .btn:disabled { opacity:.35; pointer-events:none; }
+  .tab { padding:.6rem 1rem; border-radius:.75rem; color:#a79bc4; font-weight:500; }
+  .tab[aria-selected="true"] { color:#fff; background:rgba(168,85,247,.2); box-shadow:inset 0 0 0 1px rgba(168,85,247,.55); }
+  .link { color:inherit; text-align:left; cursor:pointer; } .link:hover { color:#d8b4fe; text-decoration:underline; }
+  :focus-visible { outline:2px solid var(--orchid); outline-offset:2px; }
+  .rank1 { background:linear-gradient(135deg,#a855f7,#d946ef); color:#fff; box-shadow:0 0 18px rgba(217,70,239,.6); }
+  .rank2 { background:rgba(216,180,254,.25); color:#e9d5ff; } .rank3 { background:rgba(168,85,247,.15); color:#d8b4fe; }
+  .side-win { background:rgba(168,85,247,.16); box-shadow:inset 0 0 0 1px rgba(168,85,247,.7); }
+  .side-lose { opacity:.6; }
+  select, input { color-scheme: dark; }
+  .scroll { scrollbar-color:#6b21a8 transparent; }
+  @media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+</style>
+</head>
+<body class="font-sans min-h-screen antialiased">
+<div class="max-w-5xl mx-auto px-4 pb-16">
 
-# Use Turso's SQLite cloud engine
-import libsql_experimental as sqlite3
-
-log = logging.getLogger("debatebot.db")
-_URL = None
-_TOKEN = None
-
-def configure(url, token=None):
-    global _URL, _TOKEN
-    _URL = url
-    _TOKEN = token
-
-def dict_factory(cursor, row):
-    fields = [column[0] for column in cursor.description]
-    return {key: value for key, value in zip(fields, row)}
-
-@contextmanager
-def connect():
-    if not _URL:
-        conn = sqlite3.connect(_DB_PATH)
-        conn.row_factory = dict_factory
-    else:
-        conn = sqlite3.connect(_URL, auth_token=_TOKEN)
-        # Turso/libsql handles its own rows safely without dict_factory here
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-def backup(*args, **kwargs):
-    return None
-
-def ensure_column(conn, table, column, decl):
-    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if column in cols:
-        return False
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-    return True
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    avatar_url TEXT,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    draws INTEGER DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS debates (
-    debate_number INTEGER PRIMARY KEY AUTOINCREMENT,
-    notion TEXT,
-    affirmative_id INTEGER,
-    affirmative_name TEXT,
-    negative_id INTEGER,
-    negative_name TEXT,
-    winner_id INTEGER,
-    start_message_id INTEGER,
-    start_link TEXT,
-    conclusion_message_id INTEGER,
-    conclusion_link TEXT,
-    channel_id INTEGER,
-    status TEXT NOT NULL DEFAULT 'finished',
-    result TEXT
-);
-CREATE TABLE IF NOT EXISTS fallacies (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    debate_number INTEGER,
-    user_id INTEGER,
-    fallacy_name TEXT,
-    reasoning_message_id INTEGER,
-    reasoning_link TEXT
-);
-CREATE TABLE IF NOT EXISTS wpm_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    debate_number INTEGER,
-    user_id INTEGER,
-    words INTEGER,
-    wpm REAL,
-    message_link TEXT
-);
-CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-    overseer_id INTEGER,
-    action TEXT,
-    details TEXT
-);
-CREATE TABLE IF NOT EXISTS messages (
-    message_id INTEGER PRIMARY KEY,
-    debate_number INTEGER,
-    channel_id INTEGER,
-    user_id INTEGER,
-    content TEXT,
-    words INTEGER,
-    risk REAL,
-    link TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id);
-CREATE TABLE IF NOT EXISTS integrity_flags (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    debate_number INTEGER,
-    user_id INTEGER,
-    message_id INTEGER,
-    message_link TEXT,
-    risk REAL,
-    level TEXT,
-    summary TEXT,
-    signals_json TEXT,
-    status TEXT NOT NULL DEFAULT 'open',
-    reviewed_by INTEGER,
-    alert_channel_id INTEGER,
-    alert_message_id INTEGER,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_flags_debate ON integrity_flags(debate_number);
-"""
-
-def init_db(path=None):
-    if path:
-        configure(path)
-    with connect() as conn:
-        for stmt in SCHEMA.split(';'):
-            if stmt.strip():
-                conn.execute(stmt)
-        
-        # Safely add the avatar_url column to existing databases
-        ensure_column(conn, "users", "avatar_url", "TEXT")
-        
-        added_result = ensure_column(conn, "debates", "result", "TEXT")
-        ensure_column(conn, "debates", "status", "TEXT NOT NULL DEFAULT 'finished'")
-        ensure_column(conn, "debates", "channel_id", "INTEGER")
-        ensure_column(conn, "debates", "judge_id", "INTEGER")
-        ensure_column(conn, "debates", "started_at", "TEXT")
-        ensure_column(conn, "debates", "ended_at", "TEXT")
-        ensure_column(conn, "wpm_log", "composition_seconds", "REAL")
-        ensure_column(conn, "wpm_log", "saw_typing", "INTEGER")
-        ensure_column(conn, "wpm_log", "risk", "REAL")
-        if added_result:
-            conn.execute(
-                """UPDATE debates SET result = CASE
-                       WHEN winner_id = affirmative_id THEN 'aff'
-                       WHEN winner_id = negative_id THEN 'neg'
-                       WHEN winner_id IS NULL AND conclusion_message_id IS NOT NULL THEN 'draw'
-                   END
-                   WHERE result IS NULL"""
-            )
-        recalc_stats(conn)
-
-def upsert_user(conn, user_id, username, avatar_url=None):
-    if avatar_url:
-        conn.execute(
-            """INSERT INTO users (user_id, username, avatar_url) VALUES (?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url""",
-            (user_id, username, avatar_url),
-        )
-    else:
-        conn.execute(
-            """INSERT INTO users (user_id, username) VALUES (?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET username = excluded.username""",
-            (user_id, username),
-        )
-
-def recalc_stats(conn):
-    conn.execute("UPDATE users SET wins = 0, losses = 0, draws = 0")
-    rows = conn.execute(
-        """SELECT affirmative_id, affirmative_name, negative_id, negative_name, result
-           FROM debates WHERE result IS NOT NULL AND status != 'cancelled'"""
-    ).fetchall()
-    for r in rows:
-        upsert_user(conn, r["affirmative_id"], r["affirmative_name"])
-        upsert_user(conn, r["negative_id"], r["negative_name"])
-        if r["result"] in ("aff", "neg"):
-            win, lose = (
-                (r["affirmative_id"], r["negative_id"])
-                if r["result"] == "aff"
-                else (r["negative_id"], r["affirmative_id"])
-            )
-            conn.execute("UPDATE users SET wins = wins + 1 WHERE user_id = ?", (win,))
-            conn.execute("UPDATE users SET losses = losses + 1 WHERE user_id = ?", (lose,))
-        elif r["result"] == "draw":
-            conn.execute(
-                "UPDATE users SET draws = draws + 1 WHERE user_id IN (?, ?)",
-                (r["affirmative_id"], r["negative_id"]),
-            )
-
-def get_user(conn, user_id):
-    return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-
-def leaderboard(conn):
-    return conn.execute(
-        """SELECT user_id, username, wins, losses, draws FROM users
-           WHERE wins + losses + draws > 0
-           ORDER BY wins DESC, losses ASC, username COLLATE NOCASE"""
-    ).fetchall()
-
-def user_streak(conn, user_id):
-    rows = conn.execute(
-        """SELECT affirmative_id, result FROM debates
-           WHERE (affirmative_id = ? OR negative_id = ?) AND result IS NOT NULL
-             AND status != 'cancelled'
-           ORDER BY debate_number DESC""",
-        (user_id, user_id),
-    ).fetchall()
-    kind, length = None, 0
-    for r in rows:
-        if r["result"] == "draw":
-            k = "D"
-        else:
-            k = "W" if (r["result"] == "aff") == (r["affirmative_id"] == user_id) else "L"
-        if kind is None:
-            kind = k
-        if k != kind:
-            break
-        length += 1
-    return kind, length
-
-def get_debate(conn, number):
-    return conn.execute("SELECT * FROM debates WHERE debate_number = ?", (number,)).fetchone()
-
-def create_debate(conn, *, notion, aff, neg, judge_id, start_message_id, start_link, channel_id):
-    cur = conn.execute(
-        """INSERT INTO debates (notion, affirmative_id, affirmative_name, negative_id,
-               negative_name, start_message_id, start_link, channel_id, status, judge_id, started_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, CURRENT_TIMESTAMP)""",
-        (notion, aff[0], aff[1], neg[0], neg[1], start_message_id, start_link, channel_id, judge_id),
-    )
+  <header class="pt-10 pb-6 flex flex-col sm:flex-row justify-between items-start gap-4">
+    <div>
+      <h1 class="text-4xl sm:text-6xl font-bold tracking-tight neon">Debate Records</h1>
+      <p class="mt-2 text-violet-200/60">Every finished debate, ranked and searchable.</p>
+    </div>
     
-    aff_avatar = aff[2] if len(aff) > 2 else None
-    neg_avatar = neg[2] if len(neg) > 2 else None
+    <!-- Discord Auth Section -->
+    <div id="auth-section">
+      <a href="/login" class="panel px-5 py-2 flex items-center gap-2 hover:bg-[#5865F2]/20 border-violet-500/40 hover:border-[#5865F2] transition-colors shadow-lg">
+        <span class="text-[#5865F2] text-xl">👾</span> 
+        <span class="font-bold text-violet-100">Login with Discord</span>
+      </a>
+    </div>
+  </header>
+
+  <form id="search-form" class="mb-6 flex gap-2" role="search">
+    <label for="q" class="sr-only">Username or user ID</label>
+    <input id="q" type="search" autocomplete="off" placeholder="Find a debater by username or user ID"
+      class="flex-1 min-w-0 bg-black/40 border border-violet-500/30 rounded-xl px-4 py-3 placeholder-violet-200/30 focus:border-violet-400">
+    <button class="btn px-5 sm:px-7">Search</button>
+  </form>
+
+  <!-- Discord Server CTA Banner -->
+  <a href="https://discord.gg/YOUR_INVITE_CODE_HERE" target="_blank" rel="noopener noreferrer" class="panel p-4 mb-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-violet-500/40 bg-[#5865F2]/10 hover:border-[#5865F2] hover:bg-[#5865F2]/20 transition-all group block">
+    <div class="flex items-center gap-3">
+      <div class="text-3xl">👾</div>
+      <div>
+        <h3 class="font-bold text-violet-100 group-hover:text-white">Want to read the actual debates?</h3>
+        <p class="text-sm text-violet-200/70">Message links will only work if you are in the server. Join the arena!</p>
+      </div>
+    </div>
+    <span class="bg-[#5865F2] text-white px-6 py-2 rounded-xl font-semibold shadow-lg group-hover:bg-[#4752C4] whitespace-nowrap">Join Server</span>
+  </a>
+
+  <section class="grid grid-cols-3 gap-3 mb-6" aria-label="Summary">
+    <div class="panel p-3 sm:p-4"><div id="stat-debates" class="text-2xl sm:text-3xl font-bold text-violet-200">–</div><div class="text-xs sm:text-sm text-violet-200/50">Debates finished</div></div>
+    <div class="panel p-3 sm:p-4"><div id="stat-debaters" class="text-2xl sm:text-3xl font-bold text-violet-200">–</div><div class="text-xs sm:text-sm text-violet-200/50">Debaters</div></div>
+    <div class="panel p-3 sm:p-4"><div id="stat-top" class="text-lg sm:text-3xl font-bold text-violet-200 truncate">–</div><div class="text-xs sm:text-sm text-violet-200/50">Most wins</div></div>
+  </section>
+
+  <!-- Cleaned Navigation -->
+  <nav class="flex gap-1 mb-5 overflow-x-auto" role="tablist">
+    <button class="tab" role="tab" data-tab="leaderboard" aria-selected="true">Leaderboard</button>
+    <button class="tab" role="tab" data-tab="debates" aria-selected="false">All debates</button>
+  </nav>
+
+  <!-- Wins-Only Leaderboard -->
+  <section id="tab-leaderboard" class="overflow-hidden space-y-3">
+    <!-- Populated by JS -->
+  </section>
+
+  <!-- Debates -->
+  <section id="tab-debates" hidden>
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <p id="debate-count" class="text-violet-200/60"></p>
+      <label class="flex items-center gap-2 text-sm text-violet-200/60">Sort by
+        <select id="sort" class="bg-black/50 border border-violet-500/40 rounded-lg px-3 py-2 text-violet-100 focus:border-violet-400">
+          <option value="newest">Newest to oldest</option>
+          <option value="oldest">Oldest to newest</option>
+        </select>
+      </label>
+    </div>
+    <div id="debate-list" class="space-y-3"></div>
+    <div class="flex items-center justify-between mt-5">
+      <button id="prev" class="btn px-4 py-2">Previous</button>
+      <span id="page-info" class="text-violet-200/60 text-sm"></span>
+      <button id="next" class="btn px-4 py-2">Next</button>
+    </div>
+  </section>
+
+  <!-- Profile (Flashcard) -->
+  <section id="tab-profile" hidden>
+    <div id="profile-box"><div class="panel p-8 text-center text-violet-200/50">Search for a debater above to see their record and past debates.</div></div>
+  </section>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state = { sort: 'newest', page: 1, pages: 1 };
+const notice = (msg) => `<div class="panel p-8 text-center text-violet-200/60">${esc(msg)}</div>`;
+
+async function api(path, params = {}) {
+  const url = new URL(path, location.origin);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed.');
+  return data;
+}
+
+const userLink = (p, cls = '') => `<button type="button" class="link ${cls}" data-uid="${esc(p.id)}">${esc(p.name)}</button>`;
+
+// Helper function to render an avatar or fallback letter
+const avatarHtml = (name, url, sizeClass) => url ? 
+  `<img src="${esc(url)}" alt="${esc(name)}" class="${sizeClass} rounded-full object-cover shadow-md">` : 
+  `<div class="${sizeClass} rounded-full rank1 flex items-center justify-center font-bold shadow-md">${esc(name.slice(0, 1).toUpperCase())}</div>`;
+
+function showTab(name) {
+  document.querySelectorAll('[data-tab]').forEach(t => t.setAttribute('aria-selected', t.dataset.tab === name));
+  ['leaderboard', 'debates', 'profile'].forEach(n => { $('#tab-' + n).hidden = n !== name; });
+  
+  // Clear the URL back to normal if they click away from the profile tab
+  if (name !== 'profile' && window.location.pathname !== '/') {
+    window.history.pushState({}, '', '/');
+  }
+}
+
+/* Authentication Check */
+async function checkAuth() {
+  try {
+    const auth = await api('/api/auth/status');
+    if (auth.logged_in) {
+      $('#auth-section').innerHTML = `
+        <div class="panel p-2 pr-4 flex items-center gap-3">
+          ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
+          <div class="flex flex-col">
+            <span class="font-bold text-violet-100 leading-tight">${esc(auth.user.name)}</span>
+            <a href="/logout" class="text-xs text-rose-400 hover:text-rose-300 hover:underline">Log Out</a>
+          </div>
+        </div>`;
+    }
+  } catch(e) {}
+}
+
+/* Wins-Only Leaderboard */
+async function loadLeaderboard() {
+  $('#tab-leaderboard').innerHTML = notice('Loading leaderboard…');
+  try {
+    const { rows } = await api('/api/leaderboard');
+    $('#stat-debaters').textContent = rows.length;
+    $('#stat-top').textContent = rows.length ? rows[0].name : '–';
+    if (!rows.length) { $('#tab-leaderboard').innerHTML = notice('No ranked debaters yet.'); return; }
     
-    upsert_user(conn, aff[0], aff[1], aff_avatar)
-    upsert_user(conn, neg[0], neg[1], neg_avatar)
-    return cur.lastrowid
+    $('#tab-leaderboard').innerHTML = rows.map(u => `
+      <div onclick="searchUser('${esc(u.name)}')" class="panel p-4 flex items-center justify-between border-violet-500/20 hover:border-violet-400 hover:bg-violet-500/10 transition-all w-full cursor-pointer group shadow-sm hover:shadow-md">
+        <div class="flex items-center gap-4">
+          <div class="w-8 text-center font-bold text-violet-200/40 group-hover:text-violet-300 text-lg">#${u.rank}</div>
+          ${avatarHtml(u.name, u.avatar, 'w-12 h-12 text-xl')}
+          <div class="font-bold text-xl text-violet-100 group-hover:text-white">${esc(u.name)}</div>
+        </div>
+        <div class="flex flex-col items-end mr-2">
+          <div class="flex items-baseline gap-1.5">
+            <span class="text-3xl font-black" style="color: var(--win)">${u.wins}</span>
+            <span class="text-xs font-bold uppercase tracking-wider opacity-80" style="color: var(--win)">Wins</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) { $('#tab-leaderboard').innerHTML = notice(e.message); }
+}
 
-def set_status(conn, number, status):
-    conn.execute("UPDATE debates SET status = ? WHERE debate_number = ?", (status, number))
+/* Debates */
+const resultLabel = { aff: 'Affirmative won', neg: 'Negative won', draw: 'Draw' };
 
-def record_result(conn, number, result, conclusion_message_id, conclusion_link):
-    d = get_debate(conn, number)
-    winner_id = {"aff": d["affirmative_id"], "neg": d["negative_id"]}.get(result)
-    conn.execute(
-        """UPDATE debates SET winner_id = ?, result = ?, conclusion_message_id = ?,
-               conclusion_link = ?, status = 'awaiting_fallacies', ended_at = CURRENT_TIMESTAMP
-           WHERE debate_number = ?""",
-        (winner_id, result, conclusion_message_id, conclusion_link, number),
-    )
-    recalc_stats(conn)
-    return get_debate(conn, number)
+function sideBox(label, p, side, result) {
+  const cls = result === side ? 'side-win' : (result === 'aff' || result === 'neg') ? 'side-lose' : 'bg-white/5';
+  return `<div class="rounded-xl p-3 ${cls}"><div class="text-xs text-violet-200/50">${label}${result === side ? ' · winner' : ''}</div>
+    <div class="font-semibold flex items-center gap-2 mt-1">
+      ${avatarHtml(p.name, p.avatar, 'w-5 h-5 text-[10px]')}
+      ${userLink(p, 'max-w-full truncate')}
+    </div></div>`;
+}
 
-def unfinished_debates(conn):
-    return conn.execute(
-        """SELECT * FROM debates WHERE channel_id IS NOT NULL
-           AND status IN ('active', 'awaiting_winner', 'awaiting_fallacies')"""
-    ).fetchall()
+const links = (d) => [d.start_link && ['Start', d.start_link], d.conclusion_link && ['Conclusion', d.conclusion_link]]
+  .filter(Boolean).map(([t, u]) => `<a class="text-violet-300 hover:underline" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`).join('<span class="text-violet-200/20 px-1">/</span>');
 
-def user_debates(conn, user_id):
-    return conn.execute(
-        """SELECT * FROM debates WHERE (affirmative_id = ? OR negative_id = ?)
-           AND status != 'cancelled' ORDER BY debate_number DESC""",
-        (user_id, user_id),
-    ).fetchall()
+function debateCard(d) {
+  const pill = d.result === 'draw' ? 'color:var(--draw);background:rgba(251,191,36,.12)' : 'color:#e9d5ff;background:rgba(168,85,247,.2)';
+  return `<article class="panel p-4">
+    <div class="flex flex-wrap items-center gap-2 text-sm">
+      <span class="font-bold text-violet-300">Debate #${d.number}</span>
+      <span class="px-2 py-0.5 rounded-full text-xs" style="${pill}">${resultLabel[d.result] || 'No result'}</span>
+      <span class="ml-auto text-xs">${links(d)}</span>
+    </div>
+    <p class="mt-2 mb-3 text-lg leading-snug">
+      ${d.start_link ? `<a href="${esc(d.start_link)}" target="_blank" rel="noopener noreferrer" class="hover:text-violet-300 hover:underline transition-colors" title="View debate start">${esc(d.notion)}</a>` : esc(d.notion)}
+    </p>
+    <div class="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-2">
+      ${sideBox('Affirmative', d.aff, 'aff', d.result)}
+      <span class="text-center text-violet-200/40 text-sm">vs</span>
+      ${sideBox('Negative', d.neg, 'neg', d.result)}
+    </div></article>`;
+}
 
-def add_fallacy(conn, number, user_id, name, message_id, link):
-    cur = conn.execute(
-        """INSERT INTO fallacies (debate_number, user_id, fallacy_name, reasoning_message_id, reasoning_link)
-           VALUES (?, ?, ?, ?, ?)""",
-        (number, user_id, name, message_id, link),
-    )
-    return cur.lastrowid
+async function loadDebates() {
+  $('#debate-list').innerHTML = notice('Loading debates…');
+  try {
+    const data = await api('/api/debates', { sort: state.sort, page: state.page });
+    state.pages = data.pages;
+    $('#stat-debates').textContent = data.total;
+    $('#debate-count').textContent = `${data.total} finished debate${data.total === 1 ? '' : 's'}`;
+    $('#page-info').textContent = `Page ${data.page} of ${data.pages}`;
+    $('#prev').disabled = data.page <= 1;
+    $('#next').disabled = data.page >= data.pages;
+    $('#debate-list').innerHTML = data.debates.length ? data.debates.map(debateCard).join('') : notice('No finished debates yet.');
+  } catch (e) { $('#debate-list').innerHTML = notice(e.message); }
+}
 
-def debate_fallacies(conn, number):
-    return conn.execute("SELECT * FROM fallacies WHERE debate_number = ? ORDER BY id", (number,)).fetchall()
+/* Profile / Flashcard */
+const chip = { W: ['Win', 'var(--win)'], L: ['Loss', 'var(--loss)'], D: ['Draw', 'var(--draw)'] };
 
-def user_fallacies(conn, user_id):
-    return conn.execute("SELECT * FROM fallacies WHERE user_id = ? ORDER BY debate_number DESC, id DESC", (user_id,)).fetchall()
+function renderProfile(u) {
+  const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toLowerCase()}${u.streak.length > 1 && u.streak.kind !== 'L' ? 's' : u.streak.length > 1 ? 'es' : ''}` : '–';
+  const stat = (v, l, c) => `<div class="rounded-xl bg-black/30 p-3"><div class="text-2xl font-bold" style="color:${c}">${v}</div><div class="text-xs text-violet-200/50">${l}</div></div>`;
+  const form = u.debates.filter(d => d.outcome).slice(0, 10).map(d => `<span title="Debate #${d.number}: ${chip[d.outcome][0]}" class="w-3 h-3 rounded-full" style="background:${chip[d.outcome][1]}"></span>`).join('');
+  
+  const rows = u.debates.map(d => `<li class="py-3 border-b border-violet-500/10 last:border-0">
+      <div class="flex items-center gap-2 text-sm">
+        ${d.outcome ? `<span class="font-semibold" style="color:${chip[d.outcome][1]}">${chip[d.outcome][0]}</span>` : '<span class="text-violet-200/40">No result</span>'}
+        <span class="text-violet-300">Debate #${d.number}</span>
+        <span class="text-violet-200/40">as ${d.side === 'aff' ? 'affirmative' : 'negative'}</span>
+        <span class="ml-auto text-xs">${links(d)}</span></div>
+      <p class="mt-1">${d.start_link ? `<a href="${esc(d.start_link)}" target="_blank" rel="noopener noreferrer" class="hover:text-violet-300 hover:underline transition-colors">${esc(d.notion)}</a>` : esc(d.notion)}</p>
+      <p class="text-sm text-violet-200/50">against ${userLink(d.opponent)}</p></li>`).join('');
 
-def audit(conn, overseer_id, action, details):
-    conn.execute("INSERT INTO audit_log (overseer_id, action, details) VALUES (?, ?, ?)", (overseer_id, action, details))
+  const fallacyRows = u.fallacies && u.fallacies.length ? u.fallacies.map(f => `
+      <li class="py-3 border-b border-violet-500/10 last:border-0">
+        <div class="flex items-center justify-between">
+          <span class="font-semibold text-rose-400">${esc(f.fallacy_name)}</span>
+          ${f.reasoning_link ? `<a href="${esc(f.reasoning_link)}" target="_blank" rel="noopener noreferrer" class="text-xs bg-rose-500/10 text-rose-300 px-2 py-1 rounded-md hover:bg-rose-500/20 hover:underline transition-colors">View Reasoning ↗</a>` : ''}
+        </div>
+        <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
+      </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
-def log_typing(conn, *, debate_number, user_id, words, wpm, link, composition_seconds, saw_typing, risk):
-    conn.execute(
-        """INSERT INTO wpm_log (debate_number, user_id, words, wpm, message_link,
-               composition_seconds, saw_typing, risk)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (debate_number, user_id, words, wpm, link, composition_seconds, int(bool(saw_typing)), risk),
-    )
+  $('#profile-box').innerHTML = `
+    <div class="panel p-5 glow relative overflow-hidden">
+      <!-- Decorative Background element -->
+      <div class="absolute top-0 right-0 w-64 h-64 bg-violet-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none"></div>
+      
+      <div class="flex items-center gap-4 relative z-10">
+        ${avatarHtml(u.name, u.avatar, 'w-16 h-16 text-3xl')}
+        <div class="min-w-0">
+          <h2 class="text-3xl font-bold truncate neon">${esc(u.name)}</h2>
+          <div class="text-xs text-violet-200/40 break-all">ID ${esc(u.id)}</div>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-6 relative z-10">
+        ${stat(u.wins, 'Wins', 'var(--win)')}${stat(u.losses, 'Losses', 'var(--loss)')}${stat(u.draws, 'Draws', 'var(--draw)')}
+        ${stat(u.win_rate + '%', 'Win rate', '#d8b4fe')}${stat(streak, 'Current streak', '#d8b4fe')}
+      </div>
+      ${form ? `<div class="mt-4 flex items-center gap-2 text-sm text-violet-200/50">Last ${Math.min(10, u.debates.length)} results <span class="flex gap-1.5 ml-1">${form}</span></div>` : ''}
+    </div>
+    
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+      <div class="panel p-4">
+        <h3 class="font-semibold mb-1">Past debates (${u.debates.length})</h3>
+        <ul class="max-h-[32rem] overflow-y-auto scroll pr-2">${rows || '<li class="py-6 text-center text-violet-200/50">No finished debates for this debater.</li>'}</ul>
+      </div>
+      <div class="panel p-4">
+        <h3 class="font-semibold mb-1 text-rose-300">Logged Fallacies (${u.fallacies ? u.fallacies.length : 0})</h3>
+        <ul class="max-h-[32rem] overflow-y-auto scroll pr-2">${fallacyRows}</ul>
+      </div>
+    </div>`;
+}
 
-def user_wpm_history(conn, user_id, limit=50):
-    rows = conn.execute(
-        """SELECT wpm FROM wpm_log WHERE user_id = ? AND wpm IS NOT NULL
-             AND COALESCE(saw_typing, 1) = 1
-           ORDER BY id DESC LIMIT ?""",
-        (user_id, limit),
-    ).fetchall()
-    return [r["wpm"] for r in rows]
+async function searchUser(q) {
+  showTab('profile');
+  $('#profile-box').innerHTML = notice('Searching…');
+  try {
+    const data = await api('/api/user', { q });
+    if (data.user) {
+      window.history.pushState({}, '', '/u/' + encodeURIComponent(data.user.name));
+      return renderProfile(data.user);
+    }
+    $('#profile-box').innerHTML = `<div class="panel p-5"><p class="mb-3 text-violet-200/60">Several debaters match. Pick one:</p>
+      <div class="flex flex-wrap gap-2">${data.matches.map(m => `<button type="button" class="tab border border-violet-500/30" data-uid="${esc(m.id)}">${esc(m.name)}</button>`).join('')}</div></div>`;
+  } catch (e) { $('#profile-box').innerHTML = notice(e.message); }
+}
 
-def wpm_summary(conn, number, threshold):
-    return conn.execute(
-        """SELECT user_id, COUNT(*) AS n, AVG(wpm) AS avg, MAX(wpm) AS mx,
-                  SUM(wpm >= ?) AS flagged
-           FROM wpm_log WHERE debate_number = ? GROUP BY user_id""",
-        (threshold, number),
-    ).fetchall()
+/* Events */
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-tab]'); if (t) showTab(t.dataset.tab);
+  const u = e.target.closest('[data-uid]'); if (u) { $('#q').value = u.dataset.uid; searchUser(u.dataset.uid); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+});
+$('#search-form').addEventListener('submit', (e) => { e.preventDefault(); const q = $('#q').value.trim(); if (q) searchUser(q); });
+$('#sort').addEventListener('change', (e) => { state.sort = e.target.value; state.page = 1; loadDebates(); });
+$('#prev').addEventListener('click', () => { state.page--; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
+$('#next').addEventListener('click', () => { state.page++; loadDebates(); $('#tab-debates').scrollIntoView({ behavior: 'smooth' }); });
 
-def store_message(conn, *, message_id, debate_number, channel_id, user_id, content, words, risk, link):
-    conn.execute(
-        """INSERT OR REPLACE INTO messages
-               (message_id, debate_number, channel_id, user_id, content, words, risk, link)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (message_id, debate_number, channel_id, user_id, content, words, risk, link),
-    )
+// URL Routing check on load
+const path = window.location.pathname;
+if (path.startsWith('/u/')) {
+  const username = decodeURIComponent(path.substring(3));
+  $('#q').value = username;
+  searchUser(username);
+}
+window.addEventListener('popstate', () => { window.location.reload(); });
 
-def corpus(conn, limit=20000):
-    return conn.execute("SELECT * FROM messages ORDER BY message_id DESC LIMIT ?", (limit,)).fetchall()
-
-def create_flag(conn, *, debate_number, user_id, message_id, message_link, risk, level, summary, signals):
-    cur = conn.execute(
-        """INSERT INTO integrity_flags (debate_number, user_id, message_id, message_link,
-               risk, level, summary, signals_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (debate_number, user_id, message_id, message_link, risk, level, summary, json.dumps(signals)),
-    )
-    return cur.lastrowid
-
-def set_flag_alert(conn, flag_id, channel_id, message_id):
-    conn.execute(
-        "UPDATE integrity_flags SET alert_channel_id = ?, alert_message_id = ? WHERE id = ?",
-        (channel_id, message_id, flag_id),
-    )
-
-def get_flag(conn, flag_id):
-    return conn.execute("SELECT * FROM integrity_flags WHERE id = ?", (flag_id,)).fetchone()
-
-def review_flag(conn, flag_id, status, reviewer_id):
-    conn.execute(
-        "UPDATE integrity_flags SET status = ?, reviewed_by = ? WHERE id = ?",
-        (status, reviewer_id, flag_id),
-    )
-
-def debate_flags(conn, number):
-    return conn.execute("SELECT * FROM integrity_flags WHERE debate_number = ? ORDER BY risk DESC, id", (number,)).fetchall()
-
-def user_flag_counts(conn, user_id):
-    rows = conn.execute(
-        "SELECT status, COUNT(*) AS n FROM integrity_flags WHERE user_id = ? GROUP BY status",
-        (user_id,),
-    ).fetchall()
-    counts = {"open": 0, "confirmed": 0, "dismissed": 0}
-    counts.update({r["status"]: r["n"] for r in rows})
-    return counts
+checkAuth();
+loadLeaderboard();
+loadDebates();
+</script>
+</body>
+</html>
