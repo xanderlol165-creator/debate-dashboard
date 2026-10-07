@@ -185,12 +185,13 @@ async function checkAuth() {
     if (auth.logged_in) {
       currentUser = auth.user;
       $('#auth-section').innerHTML = `
-        <div class="panel p-2 pr-4 flex items-center gap-3">
+        <div class="panel p-2 pr-4 flex items-center gap-3 cursor-pointer hover:border-violet-400 transition-all shadow-md group" onclick="searchUser('${esc(auth.user.name)}')">
           ${avatarHtml(auth.user.name, auth.user.avatar, 'w-10 h-10 text-lg')}
           <div class="flex flex-col">
-            <span class="font-bold text-violet-100 leading-tight">${esc(auth.user.name)}</span>
-            <a href="/logout" class="text-xs text-rose-400 hover:text-rose-300 hover:underline">Log Out</a>
+            <span class="font-bold text-violet-100 group-hover:text-white leading-tight">${esc(auth.user.name)}</span>
+            <span class="text-xs text-violet-300 hover:underline">View My Profile ↗</span>
           </div>
+          <a href="/logout" onclick="event.stopPropagation()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline ml-3">Log Out</a>
         </div>`;
     }
   } catch(e) {}
