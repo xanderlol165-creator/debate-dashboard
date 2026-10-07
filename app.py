@@ -1,23 +1,32 @@
-"""Read-only dashboard for the debate bot's Turso database."""
+"""Read-only dashboard for the debate bot's Turso database, now with Discord OAuth."""
 import os
 import re
 import threading
 import time
+import requests
 
 import libsql_experimental as libsql
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, redirect, session
 from werkzeug.exceptions import HTTPException
 
 load_dotenv()
 
 TURSO_URL = os.getenv("TURSO_URL")
 TURSO_TOKEN = os.getenv("TURSO_TOKEN")
-REPLICA_PATH = os.getenv("REPLICA_PATH", "dashboard-replica.db")  # local read cache
+REPLICA_PATH = os.getenv("REPLICA_PATH", "dashboard-replica.db")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL_SECONDS", "30"))
-FINISHED = "finished"  # debates.status value counted as a finished debate
+FINISHED = "finished"
+
+# Discord OAuth2 Variables
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")
 
 app = Flask(__name__)
+# Secure the session cookies
+app.secret_key = os.getenv("FLASK_SECRET_KEY", os.urandom(24))
+
 _lock = threading.Lock()
 _conn = None
 _last_sync = 0.0
@@ -26,36 +35,55 @@ DEBATE_COLS = ["debate_number", "notion", "affirmative_id", "affirmative_name",
                "negative_id", "negative_name", "winner_id", "result",
                "start_link", "conclusion_link"]
 DEBATE_SELECT = ", ".join(DEBATE_COLS)
-USER_COLS = ["user_id", "username", "wins", "losses", "draws"]
+
+# Added avatar_url to the base user fetch
+USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws"]
+
+
+def get_db():
+    """Initialize or return the database connection securely."""
+    global _conn, _last_sync
+    if _conn is None:
+        if not TURSO_URL or not TURSO_TOKEN:
+            raise RuntimeError("TURSO_URL and TURSO_TOKEN must be set in .env")
+        _conn = libsql.connect(REPLICA_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
+        _conn.sync()
+        _last_sync = time.monotonic()
+    elif time.monotonic() - _last_sync > SYNC_INTERVAL:
+        try:
+            _conn.sync()
+        except Exception:
+            app.logger.exception("Turso sync failed; serving cached data")
+        _last_sync = time.monotonic()
+    return _conn
 
 
 def query(sql, params=(), cols=None):
-    """Run a SELECT (the only kind this app ever issues) and return dict rows."""
-    global _conn, _last_sync
+    """Run a SELECT and return dict rows."""
     with _lock:
-        if _conn is None:
-            if not TURSO_URL or not TURSO_TOKEN:
-                raise RuntimeError("TURSO_URL and TURSO_TOKEN must be set in .env")
-            _conn = libsql.connect(REPLICA_PATH, sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-            _conn.sync()
-            _last_sync = time.monotonic()
-        elif time.monotonic() - _last_sync > SYNC_INTERVAL:
-            try:
-                _conn.sync()
-            except Exception:
-                app.logger.exception("Turso sync failed; serving cached data")
-            _last_sync = time.monotonic()
-        rows = _conn.execute(sql, params).fetchall()
+        conn = get_db()
+        rows = conn.execute(sql, params).fetchall()
     return [dict(zip(cols, r)) for r in rows]
+
+
+def execute_write(sql, params=()):
+    """Run an INSERT/UPDATE when a user logs in via Discord."""
+    with _lock:
+        conn = get_db()
+        conn.execute(sql, params)
+        conn.commit()
 
 
 def safe_url(u):
     return u if isinstance(u, str) and u.startswith(("https://", "http://")) else None
 
 
-def player(uid, name):
-    # Discord IDs exceed JS's safe integer range, so send them as strings.
-    return {"id": str(uid) if uid is not None else None, "name": name or f"User {uid}"}
+def player(uid, name, avatar_url=None):
+    return {
+        "id": str(uid) if uid is not None else None, 
+        "name": name or f"User {uid}",
+        "avatar": safe_url(avatar_url)
+    }
 
 
 def normalize_result(d):
@@ -81,24 +109,111 @@ def serialize_debate(d):
     }
 
 
+# --- ROUTES ---
+
 @app.route("/")
-def index():
+@app.route("/u/<path:username>")
+def index(username=None):
     return render_template("index.html")
 
+
+# --- DISCORD OAUTH2 SYSTEM ---
+
+@app.route("/login")
+def login():
+    """Redirect user to Discord's authorization page."""
+    if not DISCORD_CLIENT_ID or not DISCORD_REDIRECT_URI:
+        return "OAuth variables not configured in .env", 500
+    url = f"https://discord.com/api/oauth2/authorize?client_id={DISCORD_CLIENT_ID}&redirect_uri={DISCORD_REDIRECT_URI}&response_type=code&scope=identify"
+    return redirect(url)
+
+
+@app.route("/callback")
+def callback():
+    """Handle Discord's redirect back to the site."""
+    code = request.args.get("code")
+    if not code:
+        return redirect("/")
+    
+    # Exchange code for access token
+    data = {
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": DISCORD_REDIRECT_URI
+    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    r = requests.post("https://discord.com/api/oauth2/token", data=data, headers=headers)
+    if r.status_code != 200:
+        return "Failed to authenticate with Discord", 400
+    token = r.json()["access_token"]
+    
+    # Fetch user data from Discord
+    user_r = requests.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {token}"})
+    if user_r.status_code != 200:
+        return "Failed to fetch user data", 400
+    user_data = user_r.json()
+    
+    uid = int(user_data["id"])
+    username = user_data.get("global_name") or user_data.get("username")
+    avatar_hash = user_data.get("avatar")
+    avatar_url = f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png" if avatar_hash else None
+    
+    # Upsert into database to ensure they exist on the site
+    execute_write(
+        """INSERT INTO users (user_id, username, avatar_url) VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET username = excluded.username, avatar_url = COALESCE(excluded.avatar_url, users.avatar_url)""",
+        (uid, username, avatar_url)
+    )
+    
+    # Create web session
+    session["user_id"] = uid
+    session["username"] = username
+    session["avatar_url"] = avatar_url
+    
+    return redirect("/")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
+
+
+@app.route("/api/auth/status")
+def auth_status():
+    """Let the frontend HTML know who is logged in."""
+    if "user_id" in session:
+        return jsonify({
+            "logged_in": True, 
+            "user": {
+                "id": str(session["user_id"]), 
+                "name": session["username"], 
+                "avatar": session["avatar_url"]
+            }
+        })
+    return jsonify({"logged_in": False})
+
+
+# --- DATA APIS ---
 
 @app.route("/api/leaderboard")
 def api_leaderboard():
     rows = query(
-        """SELECT user_id, username, wins, losses, draws FROM users
+        """SELECT user_id, username, avatar_url, wins, losses, draws FROM users
            WHERE wins + losses + draws > 0
            ORDER BY wins DESC, losses ASC, username COLLATE NOCASE LIMIT 200""",
         cols=USER_COLS)
     out = []
     for i, r in enumerate(rows, 1):
         games = r["wins"] + r["losses"] + r["draws"]
-        out.append({"rank": i, **player(r["user_id"], r["username"]),
-                    "wins": r["wins"], "losses": r["losses"], "draws": r["draws"],
-                    "win_rate": round(100 * r["wins"] / games) if games else 0})
+        out.append({
+            "rank": i, 
+            **player(r["user_id"], r["username"], r["avatar_url"]),
+            "wins": r["wins"], "losses": r["losses"], "draws": r["draws"],
+            "win_rate": round(100 * r["wins"] / games) if games else 0
+        })
     return jsonify({"rows": out})
 
 
@@ -119,10 +234,23 @@ def api_debates():
 
 def profile(user):
     uid = user["user_id"]
+    
+    # 1. Fetch Debates
     rows = query(
         f"""SELECT {DEBATE_SELECT} FROM debates
             WHERE (affirmative_id = ? OR negative_id = ?) AND status = ?
             ORDER BY debate_number DESC""", (uid, uid, FINISHED), DEBATE_COLS)
+            
+    # 2. Fetch Fallacies (Fix re-applied here!)
+    f_rows = query(
+        "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE user_id = ? ORDER BY id DESC",
+        (uid,), ["debate_number", "fallacy_name", "reasoning_link"]
+    )
+    fallacies = [
+        {"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])}
+        for r in f_rows
+    ]
+
     debates, outcomes = [], []
     for d in rows:
         item = serialize_debate(d)
@@ -135,17 +263,24 @@ def profile(user):
         debates.append(item)
         if outcome:
             outcomes.append(outcome)
+            
     streak = 0
     for o in outcomes:
         if o != outcomes[0]:
             break
         streak += 1
+        
     games = user["wins"] + user["losses"] + user["draws"]
-    return {**player(uid, user["username"]), "wins": user["wins"],
-            "losses": user["losses"], "draws": user["draws"],
-            "win_rate": round(100 * user["wins"] / games) if games else 0,
-            "streak": {"kind": outcomes[0], "length": streak} if outcomes else None,
-            "debates": debates}
+    return {
+        **player(uid, user["username"], user["avatar_url"]), 
+        "wins": user["wins"],
+        "losses": user["losses"], 
+        "draws": user["draws"],
+        "win_rate": round(100 * user["wins"] / games) if games else 0,
+        "streak": {"kind": outcomes[0], "length": streak} if outcomes else None,
+        "debates": debates,
+        "fallacies": fallacies
+    }
 
 
 @app.route("/api/user")
@@ -153,7 +288,7 @@ def api_user():
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify(error="Enter a username or user ID."), 400
-    base = "SELECT user_id, username, wins, losses, draws FROM users WHERE "
+    base = "SELECT user_id, username, avatar_url, wins, losses, draws FROM users WHERE "
     matches = []
     if re.fullmatch(r"\d{1,18}", q, re.ASCII):
         matches = query(base + "user_id = ?", (int(q),), USER_COLS)
@@ -167,7 +302,7 @@ def api_user():
     exact = [m for m in matches if (m["username"] or "").lower() == q.lower()]
     if len(matches) == 1 or len(exact) == 1:
         return jsonify(user=profile(exact[0] if exact else matches[0]))
-    return jsonify(matches=[player(m["user_id"], m["username"]) for m in matches])
+    return jsonify(matches=[player(m["user_id"], m["username"], m["avatar_url"]) for m in matches])
 
 
 @app.errorhandler(Exception)
