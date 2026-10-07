@@ -26,6 +26,10 @@ DISCORD_REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://debate-le
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "xander_debate_arena_secure_session_key_7734")
 
+# Fix for session cookies over HTTPS on Render (prevents login loop)
+app.config["SESSION_COOKIE_SECURE"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
 _lock = threading.Lock()
 _conn = None
 _last_sync = 0.0
