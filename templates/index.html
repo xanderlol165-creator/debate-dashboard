@@ -267,7 +267,7 @@ function debateCard(d) {
 async function loadDebates() {
   $('#debate-list').innerHTML = notice('Loading debates…');
   try {
-    const data = await api('/api/debates', { sort: state.sort, page: state.page });
+    const data = await await api('/api/debates', { sort: state.sort, page: state.page });
     state.pages = data.pages;
     $('#stat-debates').textContent = data.total;
     $('#debate-count').textContent = `${data.total} finished debate${data.total === 1 ? '' : 's'}`;
@@ -281,10 +281,13 @@ async function loadDebates() {
 const chip = { W: ['Win', 'var(--win)'], L: ['Loss', 'var(--loss)'], D: ['Draw', 'var(--draw)'] };
 
 function renderProfile(u) {
-  // Check if it's the logged-in user viewing their own profile
-  const isMe = currentUser && String(currentUser.id) === String(u.id);
+  // THE FIX: Check ID OR Username, destroying the floating point precision mismatch
+  const isMe = currentUser && (
+    String(currentUser.id) === String(u.id) || 
+    (currentUser.name && u.name && currentUser.name.toLowerCase() === u.name.toLowerCase())
+  );
 
-  const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toUpperCase()}` : '0';
+  const streak = u.streak ? `${u.streak.length} ${chip[u.streak.kind][0].toLowerCase()}` : '0';
   const stat = (v, l, c) => `
     <div class="flex flex-col items-center justify-center p-3 sm:p-4 rounded-xl sm:rounded-2xl bg-black/40 border border-white/5 backdrop-blur-sm shadow-inner">
       <div class="text-2xl sm:text-3xl font-black" style="color:${c}">${v}</div>
@@ -311,12 +314,10 @@ function renderProfile(u) {
         <div class="text-xs text-violet-200/50 mt-1">Debate #${f.debate_number}</div>
       </li>`).join('') : '<li class="py-6 text-center text-violet-200/50">Clean record! No fallacies logged.</li>';
 
-  // Customize settings and buttons only appear if isMe == true
   const customGlow = u.embed_color ? `--violet: ${esc(u.embed_color)}; box-shadow: 0 0 28px ${esc(u.embed_color)}40, inset 0 0 0 1px ${esc(u.embed_color)};` : '';
   const bannerBg = u.banner_url ? `<div class="absolute inset-0 z-0 bg-cover bg-center opacity-40" style="background-image: url('${esc(u.banner_url)}')"></div><div class="absolute inset-0 bg-gradient-to-t from-[#08060f] via-[#08060f]/80 to-transparent z-0"></div>` : '<div class="absolute top-0 right-0 w-full h-full bg-gradient-to-b from-violet-500/20 to-transparent z-0"></div>';
   const customizeBtn = isMe ? `<button onclick="openCustomizeModal('${esc(u.banner_url || '')}', '${esc(u.embed_color || '')}')" class="absolute top-4 right-4 z-20 text-xs bg-black/60 border border-white/20 hover:bg-white/20 text-white px-4 py-2 rounded-xl backdrop-blur-md transition-colors shadow-lg font-semibold">⚙️ Customize Profile</button>` : '';
 
-  // The UniteAPI-Style Flashcard HTML
   $('#profile-box').innerHTML = `
     <div class="panel glow relative overflow-hidden flex flex-col mb-6 rounded-2xl" style="${customGlow}">
       ${bannerBg}
@@ -410,19 +411,16 @@ $('#next').addEventListener('click', () => { state.page++; loadDebates(); $('#ta
 
 window.addEventListener('popstate', () => { window.location.reload(); });
 
-// BOOT SEQUENCE (FIXED)
 (async () => {
-  // 1. ALWAYS wait for the login check to finish FIRST
+  // Ensure we confirm login FIRST before rendering the profile
   await checkAuth();
   
-  // 2. ONLY THEN check if we need to load a profile from the URL
   const path = window.location.pathname;
   if (path.startsWith('/u/')) {
     const identifier = decodeURIComponent(path.substring(3));
     searchUser(identifier);
   }
   
-  // 3. Load the rest of the page
   loadLeaderboard();
   loadDebates();
 })();
