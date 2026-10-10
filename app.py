@@ -46,14 +46,14 @@ _lock = threading.Lock()
 _conn = None
 _last_sync = 0.0
 
-# CASTING TO TEXT FIXES THE 64-BIT PRECISION LOSS BUG
-USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
-USER_SELECT = "CAST(user_id AS TEXT), username, avatar_url, wins, losses, draws, banner_url, embed_color"
-
 DEBATE_COLS = ["debate_number", "notion", "affirmative_id", "affirmative_name",
                "negative_id", "negative_name", "winner_id", "result",
                "start_link", "conclusion_link"]
-DEBATE_SELECT = "debate_number, notion, CAST(affirmative_id AS TEXT), affirmative_name, CAST(negative_id AS TEXT), negative_name, CAST(winner_id AS TEXT), result, start_link, conclusion_link"
+DEBATE_SELECT = ", ".join(DEBATE_COLS)
+
+USER_COLS = ["user_id", "username", "avatar_url", "wins", "losses", "draws", "banner_url", "embed_color"]
+# CASTING TO TEXT FIXES THE 64-BIT PRECISION LOSS BUG
+USER_SELECT = "CAST(user_id AS TEXT), username, avatar_url, wins, losses, draws, banner_url, embed_color"
 
 
 def get_db():
@@ -65,7 +65,7 @@ def get_db():
         _conn.sync()
         _last_sync = time.monotonic()
         
-        # Auto-upgrade database to ensure all required columns exist
+        # Auto-upgrade database to ensure all required columns exist (STOPS BOT CRASHES)
         try:
             cols = [r[1] for r in _conn.execute("PRAGMA table_info(users)").fetchall()]
             if "banner_url" not in cols: _conn.execute("ALTER TABLE users ADD COLUMN banner_url TEXT")
@@ -143,8 +143,10 @@ def index(identifier=None):
     og = None
     if identifier:
         try:
-            if identifier.isdigit():
-                rows = query(f"SELECT {USER_SELECT} FROM users WHERE user_id = ?", (identifier,), USER_COLS)
+            # Handle float precision loss safely in URLs too
+            if re.fullmatch(r"\d{1,20}", identifier, re.ASCII):
+                prefix = identifier[:15] + "%"
+                rows = query(f"SELECT {USER_SELECT} FROM users WHERE CAST(user_id AS TEXT) LIKE ?", (prefix,), USER_COLS)
             else:
                 rows = query(f"SELECT {USER_SELECT} FROM users WHERE username COLLATE NOCASE = ?", (identifier,), USER_COLS)
                 
@@ -199,10 +201,16 @@ def callback():
         return "Failed to fetch user data", 400
     user_data = user_r.json()
     
-    uid = str(user_data["id"]) # Enforce string type early
+    uid = str(user_data["id"])
     username = user_data.get("global_name") or user_data.get("username")
     avatar_hash = user_data.get("avatar")
     avatar_url = f"https://cdn.discordapp.com/avatars/{uid}/{avatar_hash}.png" if avatar_hash else None
+
+    # MAGIC FIX FOR JAVASCRIPT FLOAT-64 PRECISION LOSS IN DATABASE
+    # If the DB has a rounded version of your ID (e.g., ...640 instead of ...730), we adopt it!
+    prefix = uid[:15] + "%"
+    existing = query("SELECT user_id FROM users WHERE CAST(user_id AS TEXT) LIKE ? OR username COLLATE NOCASE = ?", (prefix, username), ["user_id"])
+    db_uid = str(existing[0]["user_id"]) if existing else uid
 
     # Check if user is in your server
     guilds_r = requests.get("https://discord.com/api/users/@me/guilds", headers={"Authorization": f"Bearer {token}"})
@@ -217,10 +225,10 @@ def callback():
            ON CONFLICT(user_id) DO UPDATE SET 
            username = excluded.username, 
            avatar_url = COALESCE(excluded.avatar_url, users.avatar_url)""",
-        (uid, username, avatar_url)
+        (db_uid, username, avatar_url)
     )
     
-    session["user_id"] = uid
+    session["user_id"] = db_uid
     session["username"] = username
     session["avatar_url"] = avatar_url
     session["in_server"] = in_server
@@ -265,7 +273,7 @@ def customize_profile():
         color = None
         
     execute_write(
-        "UPDATE users SET banner_url = ?, embed_color = ? WHERE user_id = ?",
+        "UPDATE users SET banner_url = ?, embed_color = ? WHERE CAST(user_id AS TEXT) = ?",
         (banner, color, str(session["user_id"]))
     )
     return jsonify(success=True)
@@ -314,13 +322,13 @@ def profile(user):
     uid = str(user["user_id"])
     rows = query(
         f"""SELECT {DEBATE_SELECT} FROM debates
-            WHERE (affirmative_id = ? OR negative_id = ?) AND status = ?
+            WHERE (CAST(affirmative_id AS TEXT) = ? OR CAST(negative_id AS TEXT) = ?) AND status = ?
             ORDER BY debate_number DESC""", (uid, uid, FINISHED), DEBATE_COLS)
             
     fallacies = []
     try:
         f_rows = query(
-            "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE user_id = ? ORDER BY id DESC",
+            "SELECT debate_number, fallacy_name, reasoning_link FROM fallacies WHERE CAST(user_id AS TEXT) = ? ORDER BY id DESC",
             (uid,), ["debate_number", "fallacy_name", "reasoning_link"]
         )
         fallacies = [{"debate_number": r["debate_number"], "fallacy_name": r["fallacy_name"], "reasoning_link": safe_url(r["reasoning_link"])} for r in f_rows]
@@ -330,7 +338,7 @@ def profile(user):
     debates, outcomes = [], []
     for d in rows:
         item = serialize_debate(d)
-        is_aff = d["affirmative_id"] == uid
+        is_aff = str(d["affirmative_id"]) == uid
         res = item["result"]
         outcome = None if res is None else "D" if res == "draw" else "W" if (res == "aff") == is_aff else "L"
         item.update(side="aff" if is_aff else "neg", outcome=outcome, opponent=item["neg"] if is_aff else item["aff"])
@@ -367,13 +375,19 @@ def api_user():
     matches = []
     
     if re.fullmatch(r"\d{1,20}", q, re.ASCII):
-        matches = query(base + "user_id = ?", (q,), USER_COLS)
+        matches = query(base + "CAST(user_id AS TEXT) = ?", (q,), USER_COLS)
+        if not matches:
+            prefix = q[:15] + "%"
+            matches = query(base + "CAST(user_id AS TEXT) LIKE ?", (prefix,), USER_COLS)
+    
     if not matches:
         like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         matches = query(base + """username LIKE ? ESCAPE '\\' ORDER BY wins DESC, username COLLATE NOCASE LIMIT 10""", (like,), USER_COLS)
+        
     if not matches:
         return jsonify(error=f"No debater found for \u201c{q}\u201d."), 404
-    exact = [m for m in matches if (m["username"] or "").lower() == q.lower()]
+        
+    exact = [m for m in matches if (m["username"] or "").lower() == q.lower() or str(m["user_id"]) == q or str(m["user_id"]).startswith(q[:15])]
     if len(matches) == 1 or len(exact) == 1:
         return jsonify(user=profile(exact[0] if exact else matches[0]))
     return jsonify(matches=[player(m["user_id"], m["username"], m["avatar_url"]) for m in matches])
